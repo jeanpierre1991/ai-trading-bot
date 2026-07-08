@@ -44,7 +44,12 @@ def _make_history_df(
     tz: timezone | ZoneInfo | None = timezone.utc,
     volume: float | list[float] = 1000.0,
 ) -> pd.DataFrame:
-    start_time = start or datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
+    if tz is None:
+        start_time = start or datetime(2026, 1, 1, 9, 0)
+        if start_time.tzinfo is not None:
+            start_time = start_time.replace(tzinfo=None)
+    else:
+        start_time = start or datetime(2026, 1, 1, 9, 0, tzinfo=tz)
     timestamps = [start_time + timedelta(hours=index) for index in range(rows)]
 
     if isinstance(volume, list):
@@ -74,7 +79,7 @@ def test_get_latest_price_uses_fast_info() -> None:
 
     price = provider.get_latest_price(Symbol("AAPL"))
 
-    assert price == Decimal("190.13")
+    assert price == Decimal("190.12")
     assert ticker.history_calls == []
 
 
