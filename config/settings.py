@@ -1,0 +1,83 @@
+"""Application settings loaded from environment variables and .env file."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+from typing import Literal
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Central configuration for the trading bot."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
+    # Application
+    app_name: str = "AI Trading Bot"
+    app_version: str = "0.1.0"
+    environment: Literal["development", "staging", "production"] = "development"
+    debug: bool = False
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    log_dir: Path = Path("logs")
+
+    # Trading
+    trading_mode: Literal["paper", "live", "backtest"] = "paper"
+    default_symbol: str = "AAPL"
+    default_timeframe: str = "1h"
+    base_currency: str = "USD"
+
+    # Risk management defaults
+    max_position_size_pct: Decimal = Decimal("0.05")
+    max_daily_loss_pct: Decimal = Decimal("0.02")
+    max_open_positions: int = 10
+
+    # Broker
+    broker_name: str = "paper"
+    broker_api_key: str = ""
+    broker_api_secret: str = ""
+    broker_base_url: str = "https://paper-api.example.com"
+
+    # Market data
+    market_data_provider: str = "mock"
+    market_data_api_key: str = ""
+
+    # AI engine
+    ai_provider: str = "mock"
+    ai_model: str = "gpt-4"
+    ai_api_key: str = ""
+    ai_temperature: float = 0.2
+
+    # News engine
+    news_provider: str = "mock"
+    news_api_key: str = ""
+
+    # Alerts
+    alerts_enabled: bool = True
+    alert_email: str = ""
+    alert_webhook_url: str = ""
+
+    # Backtesting
+    backtest_initial_capital: Decimal = Decimal("100000")
+    backtest_commission_pct: Decimal = Decimal("0.001")
+
+    @field_validator("log_dir", mode="before")
+    @classmethod
+    def _coerce_log_dir(cls, value: str | Path) -> Path:
+        return Path(value)
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+    @property
+    def is_paper_trading(self) -> bool:
+        return self.trading_mode == "paper"
