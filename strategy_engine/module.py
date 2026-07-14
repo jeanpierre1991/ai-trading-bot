@@ -9,7 +9,11 @@ from config.settings import Settings
 from core.base_module import BaseModule, ModuleHealth
 from core.types import MarketBar
 from strategy_engine.base import BaseStrategy
-from strategy_engine.registry import create_strategy, list_strategies
+from strategy_engine.registry import (
+    create_strategy,
+    default_strategy_name,
+    list_strategies,
+)
 from strategy_engine.signal import StrategySignal
 
 
@@ -46,12 +50,13 @@ class StrategyEngineModule(BaseModule):
         bars: list[MarketBar],
         *,
         symbol: str | None = None,
-        strategy_name: str = "ema_crossover",
+        strategy_name: str | None = None,
     ) -> StrategySignal:
         if not self._strategies:
             raise RuntimeError("Strategy engine not initialized")
 
-        strategy = self.get_strategy(strategy_name)
+        resolved_name = strategy_name if strategy_name is not None else default_strategy_name()
+        strategy = self.get_strategy(resolved_name)
         resolved_symbol = symbol or self._settings.default_symbol
         return strategy.evaluate(bars, symbol=resolved_symbol)
 
@@ -71,13 +76,13 @@ class StrategyEngineModule(BaseModule):
 
     @staticmethod
     def _sample_bars(count: int = 60) -> list[MarketBar]:
-        """Deterministic OHLCV sample long enough for default EMA periods."""
+        """Deterministic OHLCV sample long enough for registered strategies."""
         base_timestamp = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
         bars: list[MarketBar] = []
         price = Decimal("100")
 
         for index in range(count):
-            # Mild uptrend then a soft pullback so EMA series are well-defined.
+            # Mild uptrend then a soft pullback so indicator series are well-defined.
             if index < 40:
                 price = (price + Decimal("0.35")).quantize(Decimal("0.01"))
             else:

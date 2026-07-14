@@ -11,7 +11,7 @@ from config.settings import Settings
 from core.base_module import ModuleStatus
 from core.types import MarketBar, SignalAction
 from strategy_engine.module import StrategyEngineModule
-from strategy_engine.strategies import EmaCrossoverStrategy
+from strategy_engine.registry import default_strategy_name, list_strategies
 
 
 @pytest.fixture
@@ -40,18 +40,25 @@ def _sample_bars(count: int = 60) -> list[MarketBar]:
     return bars
 
 
-def test_initialize_registers_ema_crossover(module: StrategyEngineModule) -> None:
-    assert module.list_strategies() == ["ema_crossover"]
-    assert isinstance(module.get_strategy("ema_crossover"), EmaCrossoverStrategy)
+def test_initialize_registers_strategies_from_registry(module: StrategyEngineModule) -> None:
+    assert module.list_strategies() == list(list_strategies())
+    assert module.get_strategy(default_strategy_name()).name == default_strategy_name()
 
 
 def test_evaluate_returns_strategy_signal(module: StrategyEngineModule) -> None:
     signal = module.evaluate(_sample_bars(), symbol="MSFT")
 
     assert signal.symbol == "MSFT"
-    assert signal.strategy_name == "ema_crossover"
+    assert signal.strategy_name == default_strategy_name()
     assert signal.action in {SignalAction.BUY, SignalAction.SELL, SignalAction.HOLD}
     assert signal.price > 0
+
+
+def test_evaluate_selects_strategy_by_name(module: StrategyEngineModule) -> None:
+    strategy_name = default_strategy_name()
+    signal = module.evaluate(_sample_bars(), strategy_name=strategy_name)
+
+    assert signal.strategy_name == strategy_name
 
 
 def test_evaluate_uses_default_symbol(module: StrategyEngineModule) -> None:
@@ -69,7 +76,7 @@ def test_evaluate_before_initialize_raises() -> None:
 
 def test_unknown_strategy_raises(module: StrategyEngineModule) -> None:
     with pytest.raises(ValueError, match="Unknown strategy"):
-        module.get_strategy("mean_reversion")
+        module.evaluate(_sample_bars(), strategy_name="mean_reversion")
 
 
 def test_health_check_is_healthy(module: StrategyEngineModule) -> None:
@@ -78,5 +85,5 @@ def test_health_check_is_healthy(module: StrategyEngineModule) -> None:
     assert health.is_healthy is True
     assert health.status == ModuleStatus.READY
     assert health.message == "Strategy engine operational"
-    assert health.details["strategies"] == ["ema_crossover"]
-    assert health.details["sample_signal"]["strategy_name"] == "ema_crossover"
+    assert health.details["strategies"] == list(list_strategies())
+    assert health.details["sample_signal"]["strategy_name"] == default_strategy_name()

@@ -8,6 +8,7 @@ from strategy_engine.registry import (
     STRATEGY_REGISTRY,
     StrategyDefinition,
     create_strategy,
+    default_strategy_name,
     get_strategy,
     list_strategies,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "StrategyEngineModule",
     "StrategySignal",
     "create_strategy",
+    "default_strategy_name",
     "get_strategy",
     "list_strategies",
 ]

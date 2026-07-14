@@ -37,6 +37,14 @@ def list_strategies() -> tuple[str, ...]:
     return tuple(sorted(STRATEGY_REGISTRY))
 
 
+def default_strategy_name() -> str:
+    """Return the deterministic default strategy from the registry."""
+    names = list_strategies()
+    if not names:
+        raise ValueError("No strategies registered")
+    return names[0]
+
+
 def create_strategy(name: str, **overrides: Any) -> BaseStrategy:
     definition = get_strategy(name)
     params = {**definition.default_params, **overrides}
