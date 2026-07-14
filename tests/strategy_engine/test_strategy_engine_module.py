@@ -61,6 +61,13 @@ def test_evaluate_selects_strategy_by_name(module: StrategyEngineModule) -> None
     assert signal.strategy_name == strategy_name
 
 
+def test_evaluate_selects_rsi_strategy_by_name(module: StrategyEngineModule) -> None:
+    signal = module.evaluate(_sample_bars(), strategy_name="rsi")
+
+    assert signal.strategy_name == "rsi"
+    assert signal.action in {SignalAction.BUY, SignalAction.SELL, SignalAction.HOLD}
+
+
 def test_evaluate_uses_default_symbol(module: StrategyEngineModule) -> None:
     signal = module.evaluate(_sample_bars())
 

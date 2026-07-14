@@ -11,12 +11,13 @@ from strategy_engine.registry import (
     get_strategy,
     list_strategies,
 )
-from strategy_engine.strategies import EmaCrossoverStrategy
+from strategy_engine.strategies import EmaCrossoverStrategy, RSIStrategy
 
 
-def test_registry_contains_ema_crossover() -> None:
+def test_registry_contains_registered_strategies() -> None:
     assert "ema_crossover" in STRATEGY_REGISTRY
-    assert list_strategies() == ("ema_crossover",)
+    assert "rsi" in STRATEGY_REGISTRY
+    assert list_strategies() == ("ema_crossover", "rsi")
 
 
 def test_default_strategy_name_comes_from_registry() -> None:
@@ -30,6 +31,18 @@ def test_get_strategy_returns_definition() -> None:
     assert definition.name == "ema_crossover"
     assert definition.strategy_class is EmaCrossoverStrategy
     assert definition.default_params == {"fast_period": 12, "slow_period": 26}
+
+
+def test_get_rsi_strategy_returns_definition() -> None:
+    definition = get_strategy("rsi")
+
+    assert definition.name == "rsi"
+    assert definition.strategy_class is RSIStrategy
+    assert definition.default_params == {
+        "period": 14,
+        "oversold": 30.0,
+        "overbought": 70.0,
+    }
 
 
 def test_get_strategy_unknown_raises() -> None:
@@ -46,3 +59,16 @@ def test_create_strategy_uses_defaults_and_overrides() -> None:
     assert default.slow_period == 26
     assert custom.fast_period == 5
     assert custom.slow_period == 10
+
+
+def test_create_rsi_strategy_uses_defaults_and_overrides() -> None:
+    default = create_strategy("rsi")
+    custom = create_strategy("rsi", period=7, oversold=25.0, overbought=75.0)
+
+    assert isinstance(default, RSIStrategy)
+    assert default.period == 14
+    assert default.oversold == 30.0
+    assert default.overbought == 70.0
+    assert custom.period == 7
+    assert custom.oversold == 25.0
+    assert custom.overbought == 75.0

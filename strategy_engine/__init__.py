@@ -13,7 +13,7 @@ from strategy_engine.registry import (
     list_strategies,
 )
 from strategy_engine.signal import StrategySignal
-from strategy_engine.strategies import EmaCrossoverStrategy
+from strategy_engine.strategies import EmaCrossoverStrategy, RSIStrategy
 
 MODULE_CLASS = StrategyEngineModule
 
@@ -21,6 +21,7 @@ __all__ = [
     "BaseStrategy",
     "EmaCrossoverStrategy",
     "MODULE_CLASS",
+    "RSIStrategy",
     "STRATEGY_REGISTRY",
     "StrategyDefinition",
     "StrategyEngineModule",
