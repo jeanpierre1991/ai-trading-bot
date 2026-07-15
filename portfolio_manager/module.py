@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 from config.settings import Settings
 from core.base_module import BaseModule, ModuleHealth
-from portfolio_manager.portfolio import Portfolio
+from portfolio_manager.portfolio import Fill, Portfolio
 
 
 class PortfolioManagerModule(BaseModule):
@@ -28,6 +26,10 @@ class PortfolioManagerModule(BaseModule):
         if self._portfolio is None:
             raise RuntimeError("Portfolio not initialized")
         return self._portfolio
+
+    def apply_fill(self, fill: Fill) -> None:
+        """Apply a fill through the managed portfolio."""
+        self.portfolio.apply_fill(fill)
 
     def health_check(self) -> ModuleHealth:
         if self._portfolio is None:

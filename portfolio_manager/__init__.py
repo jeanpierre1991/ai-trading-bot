@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from portfolio_manager.module import PortfolioManagerModule
-from portfolio_manager.portfolio import Portfolio, Position
+from portfolio_manager.portfolio import Fill, Portfolio, Position
 
 MODULE_CLASS = PortfolioManagerModule
 
-__all__ = ["PortfolioManagerModule", "Portfolio", "Position", "MODULE_CLASS"]
+__all__ = ["PortfolioManagerModule", "Portfolio", "Position", "Fill", "MODULE_CLASS"]
 
 
 def register_modules(registry: object) -> None:
