@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from risk_manager.base import RiskManager
+from risk_manager.models import RiskEvaluation
 from risk_manager.module import RiskManagerModule
 from risk_manager.rules import RiskAssessment, RiskRules
 
 MODULE_CLASS = RiskManagerModule
 
-__all__ = ["RiskManagerModule", "RiskRules", "RiskAssessment", "MODULE_CLASS"]
+__all__ = [
+    "MODULE_CLASS",
+    "RiskAssessment",
+    "RiskEvaluation",
+    "RiskManager",
+    "RiskManagerModule",
+    "RiskRules",
+]
 
 
 def register_modules(registry: object) -> None:
