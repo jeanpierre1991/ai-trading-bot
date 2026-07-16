@@ -8,7 +8,7 @@ from core.types import MarketBar
 from strategy_engine.signal import StrategySignal
 
 
-class BaseStrategy(ABC):
+class Strategy(ABC):
     """Contract every strategy must implement."""
 
     @property
@@ -19,3 +19,7 @@ class BaseStrategy(ABC):
     @abstractmethod
     def evaluate(self, bars: list[MarketBar], *, symbol: str) -> StrategySignal:
         """Evaluate market bars and return a trading signal."""
+
+
+# Backward-compatible alias used by the existing strategy engine.
+BaseStrategy = Strategy

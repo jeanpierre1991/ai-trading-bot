@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from strategy_engine.base import BaseStrategy
+from strategy_engine.base import BaseStrategy, Strategy
 from strategy_engine.module import StrategyEngineModule
 from strategy_engine.registry import (
     STRATEGY_REGISTRY,
@@ -13,16 +13,18 @@ from strategy_engine.registry import (
     list_strategies,
 )
 from strategy_engine.signal import StrategySignal
-from strategy_engine.strategies import EmaCrossoverStrategy, RSIStrategy
+from strategy_engine.strategies import EMACrossoverStrategy, EmaCrossoverStrategy, RSIStrategy
 
 MODULE_CLASS = StrategyEngineModule
 
 __all__ = [
     "BaseStrategy",
+    "EMACrossoverStrategy",
     "EmaCrossoverStrategy",
     "MODULE_CLASS",
     "RSIStrategy",
     "STRATEGY_REGISTRY",
+    "Strategy",
     "StrategyDefinition",
     "StrategyEngineModule",
     "StrategySignal",
