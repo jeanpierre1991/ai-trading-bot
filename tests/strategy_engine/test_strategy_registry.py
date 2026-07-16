@@ -11,7 +11,7 @@ from strategy_engine.registry import (
     get_strategy,
     list_strategies,
 )
-from strategy_engine.strategies import EmaCrossoverStrategy, RSIStrategy
+from strategy_engine.strategies import EMACrossoverStrategy, RSIStrategy
 
 
 def test_registry_contains_registered_strategies() -> None:
@@ -29,7 +29,7 @@ def test_get_strategy_returns_definition() -> None:
     definition = get_strategy("EMA_Crossover")
 
     assert definition.name == "ema_crossover"
-    assert definition.strategy_class is EmaCrossoverStrategy
+    assert definition.strategy_class is EMACrossoverStrategy
     assert definition.default_params == {"fast_period": 12, "slow_period": 26}
 
 
@@ -54,7 +54,7 @@ def test_create_strategy_uses_defaults_and_overrides() -> None:
     default = create_strategy("ema_crossover")
     custom = create_strategy("ema_crossover", fast_period=5, slow_period=10)
 
-    assert isinstance(default, EmaCrossoverStrategy)
+    assert isinstance(default, EMACrossoverStrategy)
     assert default.fast_period == 12
     assert default.slow_period == 26
     assert custom.fast_period == 5

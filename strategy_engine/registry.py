@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from strategy_engine.base import BaseStrategy
-from strategy_engine.strategies.ema_crossover import EmaCrossoverStrategy
+from strategy_engine.strategies.ema_crossover_strategy import EMACrossoverStrategy
 from strategy_engine.strategies.rsi import RSIStrategy
 
 
@@ -20,7 +20,7 @@ class StrategyDefinition:
 STRATEGY_REGISTRY: dict[str, StrategyDefinition] = {
     "ema_crossover": StrategyDefinition(
         name="ema_crossover",
-        strategy_class=EmaCrossoverStrategy,
+        strategy_class=EMACrossoverStrategy,
         default_params={"fast_period": 12, "slow_period": 26},
     ),
     "rsi": StrategyDefinition(
