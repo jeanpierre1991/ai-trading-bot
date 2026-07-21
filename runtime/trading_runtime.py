@@ -21,6 +21,7 @@ from runtime.risk_gate import apply_risk_gate
 from strategy_engine.signal import StrategySignal
 
 _QTY = Decimal("0.0001")
+_MONEY = Decimal("0.01")
 
 
 class BasicTradingRuntime(TradingRuntime):
@@ -28,7 +29,8 @@ class BasicTradingRuntime(TradingRuntime):
 
     Dependencies are injected so adapters can swap market data, strategy
     evaluation, risk, and portfolio implementations without changing this
-    contract. Order execution remains out of scope.
+    contract. Order execution remains out of scope. Portfolio access is
+    read-only: value and positions inform sizing / exits; no fills applied.
     """
 
     def __init__(
@@ -137,12 +139,12 @@ class BasicTradingRuntime(TradingRuntime):
                 portfolio_snapshot=snapshot,
             )
 
-        intent = self._build_trade_intent(signal, gate.evaluation)
-        if intent is None:
+        intent, abort_reason = self._try_build_trade_intent(signal, gate.evaluation)
+        if abort_reason is not None:
             return PipelineResult(
                 success=False,
                 stage_reached="intent",
-                aborted_reason="Computed trade quantity must be positive",
+                aborted_reason=abort_reason,
                 signal=signal,
                 risk_evaluation=gate.evaluation,
                 intent=None,
@@ -160,19 +162,61 @@ class BasicTradingRuntime(TradingRuntime):
         )
 
     def _resolve_portfolio_value(self, context: RuntimeContext) -> Decimal:
+        """Prefer real Portfolio.total_value; context value is fallback only."""
+        if self._portfolio_is_usable():
+            return Decimal(str(self._portfolio.total_value))
         if context.portfolio_value is not None:
             return Decimal(str(context.portfolio_value))
-        return Decimal(str(self._portfolio.total_value))
+        return Decimal("0")
 
-    def _portfolio_snapshot(self) -> dict[str, float | int]:
-        return dict(self._portfolio.summary())
+    def _portfolio_is_usable(self) -> bool:
+        portfolio = self._portfolio
+        return hasattr(portfolio, "total_value") and hasattr(portfolio, "summary")
 
-    @staticmethod
-    def _build_trade_intent(
+    def _portfolio_snapshot(self) -> dict[str, float | int] | None:
+        summary = getattr(self._portfolio, "summary", None)
+        if not callable(summary):
+            return None
+        return dict(summary())
+
+    def _long_quantity(self, symbol: str) -> Decimal:
+        positions = getattr(self._portfolio, "positions", None)
+        if not isinstance(positions, dict):
+            return Decimal("0")
+
+        position = positions.get(str(symbol))
+        if position is None:
+            return Decimal("0")
+
+        if getattr(position, "side", None) is not Side.BUY:
+            return Decimal("0")
+
+        quantity = getattr(position, "quantity", None)
+        if quantity is None:
+            return Decimal("0")
+        return Decimal(str(quantity))
+
+    def _try_build_trade_intent(
+        self,
+        signal: StrategySignal,
+        evaluation: RiskEvaluation,
+    ) -> tuple[TradeIntent | None, str | None]:
+        if signal.action is SignalAction.BUY:
+            intent = self._build_buy_intent(signal, evaluation)
+            if intent is None:
+                return None, "Computed trade quantity must be positive"
+            return intent, None
+
+        if signal.action in (SignalAction.SELL, SignalAction.CLOSE):
+            return self._build_exit_intent(signal, evaluation)
+
+        return None, f"Unsupported signal action for trade intent: {signal.action}"
+
+    def _build_buy_intent(
+        self,
         signal: StrategySignal,
         evaluation: RiskEvaluation,
     ) -> TradeIntent | None:
-        side = _side_from_action(signal.action)
         max_position_value = evaluation.position_size
         quantity = (max_position_value / signal.price).quantize(_QTY, rounding=ROUND_DOWN)
         if quantity <= 0:
@@ -180,7 +224,7 @@ class BasicTradingRuntime(TradingRuntime):
 
         return TradeIntent(
             symbol=Symbol(signal.symbol),
-            side=side,
+            side=Side.BUY,
             order_type=OrderType.MARKET,
             quantity=quantity,
             limit_price=None,
@@ -190,10 +234,46 @@ class BasicTradingRuntime(TradingRuntime):
             reason=evaluation.reason,
         )
 
+    def _build_exit_intent(
+        self,
+        signal: StrategySignal,
+        evaluation: RiskEvaluation,
+    ) -> tuple[TradeIntent | None, str | None]:
+        available = self._long_quantity(signal.symbol)
+        if available <= 0:
+            return None, f"No open long position for {signal.symbol}"
 
-def _side_from_action(action: SignalAction) -> Side:
-    if action is SignalAction.BUY:
-        return Side.BUY
-    if action in (SignalAction.SELL, SignalAction.CLOSE):
-        return Side.SELL
-    raise ValueError(f"Cannot map signal action '{action}' to order side")
+        if signal.action is SignalAction.CLOSE:
+            quantity = available
+            max_position_value = (quantity * signal.price).quantize(_MONEY)
+        else:
+            sized = (evaluation.position_size / signal.price).quantize(
+                _QTY, rounding=ROUND_DOWN
+            )
+            if sized <= 0:
+                return None, "Computed trade quantity must be positive"
+            if sized > available:
+                return (
+                    None,
+                    (
+                        f"Sell quantity {sized} exceeds available "
+                        f"{available} for {signal.symbol}"
+                    ),
+                )
+            quantity = sized
+            max_position_value = evaluation.position_size
+
+        return (
+            TradeIntent(
+                symbol=Symbol(signal.symbol),
+                side=Side.SELL,
+                order_type=OrderType.MARKET,
+                quantity=quantity,
+                limit_price=None,
+                strategy_name=signal.strategy_name,
+                signal_confidence=signal.confidence,
+                max_position_value=max_position_value,
+                reason=evaluation.reason,
+            ),
+            None,
+        )

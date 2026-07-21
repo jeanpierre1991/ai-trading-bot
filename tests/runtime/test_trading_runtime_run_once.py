@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from config.settings import Settings
-from core.types import OrderType, Side, SignalAction, Symbol
-from portfolio_manager.portfolio import Portfolio
+from core.types import OrderType, PositionId, Side, SignalAction, Symbol
+from portfolio_manager.portfolio import Portfolio, Position
 from risk_manager.basic import BasicRiskManager
 from risk_manager.models import RiskEvaluation
 from runtime.context import RuntimeContext
@@ -32,6 +32,22 @@ def _signal(
         confidence=confidence,
         strategy_name=strategy_name,
         price=price,
+    )
+
+
+def _long_position(
+    *,
+    symbol: str = "AAPL",
+    quantity: Decimal = Decimal("100"),
+    price: Decimal = Decimal("100"),
+) -> Position:
+    return Position(
+        position_id=PositionId(f"pos-{symbol}"),
+        symbol=Symbol(symbol),
+        side=Side.BUY,
+        quantity=quantity,
+        entry_price=price,
+        current_price=price,
     )
 
 
@@ -88,9 +104,7 @@ def test_buy_approved_creates_trade_intent() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", portfolio_value=100_000.0),
-    )
+    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -128,34 +142,44 @@ def test_sell_or_close_approved_creates_trade_intent(
     action: SignalAction,
     expected_side: Side,
 ) -> None:
-    runtime, _, _, portfolio = _runtime(
+    portfolio = Portfolio(cash=Decimal("50000"))
+    portfolio.positions["MSFT"] = _long_position(
+        symbol="MSFT",
+        quantity=Decimal("100"),
+        price=Decimal("200"),
+    )
+    # total_value = 50000 + 20000 = 70000; 5% = 3500 → SELL qty 17.5
+    runtime, _, _, _ = _runtime(
         signal=_signal(action=action, price=Decimal("200"), symbol="MSFT"),
+        portfolio=portfolio,
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(
-        RuntimeContext(symbol="MSFT", portfolio_value=50_000.0),
-    )
+    result = runtime.run_once(RuntimeContext(symbol="MSFT"))
 
     assert result.success is True
     assert result.intent is not None
     assert result.intent.side is expected_side
     assert result.intent.symbol == Symbol("MSFT")
-    assert result.intent.quantity == Decimal("12.5000")  # 2500 / 200
-    assert result.intent.max_position_value == Decimal("2500.00")
+    if action is SignalAction.SELL:
+        assert result.intent.quantity == Decimal("17.5000")
+        assert result.intent.max_position_value == Decimal("3500.00")
+    else:
+        assert result.intent.quantity == Decimal("100")
+        assert result.intent.max_position_value == Decimal("20000.00")
     assert result.order is None
     assert portfolio.summary() == before
 
 
 def test_risk_rejection_preserves_reason_and_skips_intent() -> None:
-    runtime, market_data, strategy_engine, portfolio = _runtime(
+    portfolio = Portfolio(cash=Decimal("0"))
+    runtime, market_data, strategy_engine, _ = _runtime(
         signal=_signal(action=SignalAction.BUY, price=Decimal("100")),
+        portfolio=portfolio,
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", portfolio_value=0.0),
-    )
+    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     assert result.success is False
     assert result.stage_reached == "risk"
@@ -177,7 +201,7 @@ def test_provider_and_strategy_called_once() -> None:
         signal=_signal(action=SignalAction.BUY),
     )
 
-    runtime.run_once(RuntimeContext(symbol="AAPL", portfolio_value=100_000.0))
+    runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     market_data.get_bars.assert_called_once_with(symbol="AAPL", limit=100)
     strategy_engine.evaluate.assert_called_once()
@@ -233,9 +257,7 @@ def test_portfolio_not_modified_on_approved_path() -> None:
     cash_before = portfolio.cash
     positions_before = dict(portfolio.positions)
 
-    result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", portfolio_value=100_000.0),
-    )
+    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     assert result.success is True
     assert result.intent is not None
@@ -251,9 +273,7 @@ def test_pipeline_result_always_valid_shape() -> None:
     ]
     for signal in cases:
         runtime, _, _, _ = _runtime(signal=signal)
-        result = runtime.run_once(
-            RuntimeContext(symbol="AAPL", portfolio_value=100_000.0),
-        )
+        result = runtime.run_once(RuntimeContext(symbol="AAPL"))
         assert isinstance(result, PipelineResult)
         assert isinstance(result.success, bool)
         assert isinstance(result.stage_reached, str)
