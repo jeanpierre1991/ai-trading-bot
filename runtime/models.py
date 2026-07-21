@@ -8,6 +8,7 @@ from decimal import Decimal
 from broker_interface.execution import ExecutionResult
 from core.types import OrderType, Side, Symbol
 from order_manager.manager import OrderRecord
+from risk_manager.models import RiskEvaluation
 from risk_manager.rules import RiskAssessment
 from strategy_engine.signal import StrategySignal
 
@@ -36,6 +37,7 @@ class PipelineResult:
     aborted_reason: str | None = None
     signal: StrategySignal | None = None
     risk_assessment: RiskAssessment | None = None
+    risk_evaluation: RiskEvaluation | None = None
     intent: TradeIntent | None = None
     order: OrderRecord | None = None
     execution: ExecutionResult | None = None
