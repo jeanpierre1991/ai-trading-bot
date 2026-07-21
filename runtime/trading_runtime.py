@@ -1,8 +1,8 @@
 """Basic trading runtime (Milestone 5).
 
 Coordinates one decision cycle: market data → strategy → risk gate →
-optional TradeIntent → portfolio snapshot. Does not place orders or mutate
-portfolio state.
+optional TradeIntent → optional dry-run execution → portfolio snapshot.
+Does not place real orders or mutate portfolio state.
 """
 
 from __future__ import annotations
@@ -10,12 +10,14 @@ from __future__ import annotations
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
+from broker_interface.execution import ExecutionStatus
 from config.settings import Settings
 from core.types import OrderType, Side, SignalAction, Symbol
 from risk_manager.base import RiskManager
 from risk_manager.models import RiskEvaluation
 from runtime.base import TradingRuntime
 from runtime.context import RuntimeContext
+from runtime.executor import OrderExecutor
 from runtime.models import PipelineResult, TradeIntent
 from runtime.risk_gate import apply_risk_gate
 from strategy_engine.signal import StrategySignal
@@ -28,9 +30,10 @@ class BasicTradingRuntime(TradingRuntime):
     """Minimal runtime for paper / live / backtest decision cycles.
 
     Dependencies are injected so adapters can swap market data, strategy
-    evaluation, risk, and portfolio implementations without changing this
-    contract. Order execution remains out of scope. Portfolio access is
-    read-only: value and positions inform sizing / exits; no fills applied.
+    evaluation, risk, portfolio, and optional order execution without changing
+    this contract. Portfolio access is read-only. An ``OrderExecutor`` (e.g.
+    ``DryRunExecutor``) may simulate fills; omitting it preserves the
+    intent-only cycle.
     """
 
     def __init__(
@@ -41,12 +44,14 @@ class BasicTradingRuntime(TradingRuntime):
         strategy_engine: Any,
         risk_manager: RiskManager,
         portfolio: Any,
+        executor: OrderExecutor | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
         self._strategy_engine = strategy_engine
         self._risk_manager = risk_manager
         self._portfolio = portfolio
+        self._executor = executor
 
     @property
     def settings(self) -> Settings:
@@ -67,6 +72,10 @@ class BasicTradingRuntime(TradingRuntime):
     @property
     def portfolio(self) -> Any:
         return self._portfolio
+
+    @property
+    def executor(self) -> OrderExecutor | None:
+        return self._executor
 
     def run_once(self, context: RuntimeContext) -> PipelineResult:
         """Run one coordinated cycle and return a PipelineResult.
@@ -151,13 +160,38 @@ class BasicTradingRuntime(TradingRuntime):
                 portfolio_snapshot=snapshot,
             )
 
+        if self._executor is None:
+            return PipelineResult(
+                success=True,
+                stage_reached="portfolio",
+                aborted_reason=None,
+                signal=signal,
+                risk_evaluation=gate.evaluation,
+                intent=intent,
+                portfolio_snapshot=snapshot,
+            )
+
+        execution = self._executor.execute(intent)
+        if execution.status is ExecutionStatus.REJECTED:
+            return PipelineResult(
+                success=False,
+                stage_reached="execution",
+                aborted_reason=execution.message,
+                signal=signal,
+                risk_evaluation=gate.evaluation,
+                intent=intent,
+                execution=execution,
+                portfolio_snapshot=snapshot,
+            )
+
         return PipelineResult(
             success=True,
-            stage_reached="portfolio",
+            stage_reached="execution",
             aborted_reason=None,
             signal=signal,
             risk_evaluation=gate.evaluation,
             intent=intent,
+            execution=execution,
             portfolio_snapshot=snapshot,
         )
 

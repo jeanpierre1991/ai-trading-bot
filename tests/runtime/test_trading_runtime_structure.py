@@ -59,6 +59,7 @@ def test_basic_trading_runtime_stores_dependencies() -> None:
     assert runtime.strategy_engine is strategy_engine
     assert runtime.risk_manager is risk_manager
     assert runtime.portfolio is portfolio
+    assert runtime.executor is None
 
 
 def test_pipeline_result_supports_risk_evaluation() -> None:
