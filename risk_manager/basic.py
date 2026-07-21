@@ -46,27 +46,25 @@ class BasicRiskManager(RiskManager):
         entry_price: Decimal,
         portfolio_value: Decimal,
     ) -> RiskEvaluation:
+        if not isinstance(symbol, str) or not symbol.strip():
+            return self._reject("Symbol must be a non-empty string")
+
         if portfolio_value <= 0:
-            return RiskEvaluation(
-                approved=False,
-                reason="Portfolio value must be positive",
-                position_size=Decimal("0"),
-                stop_loss=None,
-                take_profit=None,
-            )
+            return self._reject("Portfolio value must be positive")
 
         if entry_price <= 0:
-            return RiskEvaluation(
-                approved=False,
-                reason="Entry price must be positive",
-                position_size=Decimal("0"),
-                stop_loss=None,
-                take_profit=None,
-            )
+            return self._reject("Entry price must be positive")
 
-        position_size = (portfolio_value * self._settings.max_position_size_pct).quantize(
-            _MONEY
-        )
+        max_position_pct = self._settings.max_position_size_pct
+        if max_position_pct <= 0:
+            return self._reject("max_position_size_pct must be positive")
+        if max_position_pct > 1:
+            return self._reject("max_position_size_pct cannot exceed 1 (100%)")
+
+        position_size = (portfolio_value * max_position_pct).quantize(_MONEY)
+        if position_size <= 0:
+            return self._reject("Computed position_size must be positive")
+
         stop_loss = (entry_price * (Decimal("1") - self._stop_loss_pct)).quantize(_PRICE)
         risk_distance = entry_price - stop_loss
         take_profit = (entry_price + risk_distance * self._risk_reward_ratio).quantize(
@@ -75,8 +73,18 @@ class BasicRiskManager(RiskManager):
 
         return RiskEvaluation(
             approved=True,
-            reason=f"Approved for {symbol}: size within max_position_size_pct",
+            reason=f"Approved for {symbol.strip()}: size within max_position_size_pct",
             position_size=position_size,
             stop_loss=stop_loss,
             take_profit=take_profit,
+        )
+
+    @staticmethod
+    def _reject(reason: str) -> RiskEvaluation:
+        return RiskEvaluation(
+            approved=False,
+            reason=reason,
+            position_size=Decimal("0"),
+            stop_loss=None,
+            take_profit=None,
         )
