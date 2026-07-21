@@ -61,19 +61,6 @@ def test_basic_trading_runtime_stores_dependencies() -> None:
     assert runtime.portfolio is portfolio
 
 
-def test_basic_trading_runtime_run_once_not_implemented() -> None:
-    runtime = BasicTradingRuntime(
-        settings=Settings(),
-        market_data=object(),
-        strategy_engine=object(),
-        risk_manager=BasicRiskManager(Settings()),
-        portfolio=object(),
-    )
-
-    with pytest.raises(NotImplementedError, match="not implemented yet"):
-        runtime.run_once(RuntimeContext(symbol="AAPL"))
-
-
 def test_pipeline_result_supports_risk_evaluation() -> None:
     evaluation = RiskEvaluation(
         approved=True,
