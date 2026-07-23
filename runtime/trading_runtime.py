@@ -1,8 +1,13 @@
-"""Basic trading runtime (Milestone 5).
+"""Basic trading runtime (Milestone 5–6).
 
 Coordinates one decision cycle: market data → strategy → risk gate →
-optional TradeIntent → optional dry-run execution → portfolio snapshot.
-Does not place real orders or mutate portfolio state.
+optional TradeIntent → optional OrderExecutor → portfolio snapshot.
+Does not place live orders or mutate portfolio state.
+
+Supported executor wiring (inject one or none):
+- ``None`` — intent-only cycle (stage ``portfolio``)
+- ``DryRunExecutor`` — local simulated fill, no broker
+- ``BrokerOrderExecutor(PaperBroker)`` — paper trading via ``place_order``
 """
 
 from __future__ import annotations
@@ -31,9 +36,9 @@ class BasicTradingRuntime(TradingRuntime):
 
     Dependencies are injected so adapters can swap market data, strategy
     evaluation, risk, portfolio, and optional order execution without changing
-    this contract. Portfolio access is read-only. An ``OrderExecutor`` (e.g.
-    ``DryRunExecutor``) may simulate fills; omitting it preserves the
-    intent-only cycle.
+    this contract. Portfolio access is read-only. Any ``OrderExecutor``
+    implementation may be supplied (``DryRunExecutor``, ``BrokerOrderExecutor``,
+    or none).
     """
 
     def __init__(

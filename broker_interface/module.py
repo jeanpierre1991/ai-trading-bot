@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from broker_interface.broker import Broker, PaperBroker
+from broker_interface.execution import ExecutionResult
+from broker_interface.orders import BrokerOrderRequest
 from config.settings import Settings
 from core.base_module import BaseModule, ModuleHealth
 from core.types import Symbol
@@ -41,6 +43,10 @@ class BrokerInterfaceModule(BaseModule):
         if self._broker is None:
             raise RuntimeError("Broker not initialized")
         return self._broker
+
+    def place_order(self, request: BrokerOrderRequest) -> ExecutionResult:
+        """Delegate order placement to the active broker adapter."""
+        return self.broker.place_order(request)
 
     def health_check(self) -> ModuleHealth:
         if self._broker is None:

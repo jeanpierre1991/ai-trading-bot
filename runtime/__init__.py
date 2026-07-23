@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from runtime.base import TradingRuntime
+from runtime.broker_executor import BrokerOrderExecutor
 from runtime.context import RuntimeContext
 from runtime.dry_run import DryRunExecutor
 from runtime.executor import OrderExecutor
@@ -13,6 +14,7 @@ from runtime.trading_runtime import BasicTradingRuntime
 
 __all__ = [
     "BasicTradingRuntime",
+    "BrokerOrderExecutor",
     "DryRunExecutor",
     "ExecutionResult",
     "ExecutionStatus",
