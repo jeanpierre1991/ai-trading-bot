@@ -8,6 +8,7 @@ from runtime.broker_executor import BrokerOrderExecutor
 from runtime.context import RuntimeContext
 from runtime.dry_run import DryRunExecutor
 from runtime.executor import OrderExecutor
+from runtime.fills import execution_to_fill, is_bookable
 from runtime.models import PipelineResult, TradeIntent
 from runtime.risk_gate import RiskGateResult, apply_risk_gate
 from runtime.trading_runtime import BasicTradingRuntime
@@ -25,4 +26,6 @@ __all__ = [
     "TradeIntent",
     "TradingRuntime",
     "apply_risk_gate",
+    "execution_to_fill",
+    "is_bookable",
 ]
