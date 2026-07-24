@@ -45,12 +45,15 @@ def test_buy_filled_books_fill_into_portfolio() -> None:
     result = runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     assert result.success is True
+    assert result.stage_reached == "portfolio"
     assert result.execution is not None
     assert result.execution.status.value == "filled"
     portfolio.apply_fill.assert_called_once()
     assert portfolio.cash < cash_before
     assert portfolio.position_count == 1
     assert "AAPL" in portfolio.positions
+    assert result.portfolio_snapshot is not None
+    assert result.portfolio_snapshot == portfolio.summary()
 
 
 def test_bookable_sell_without_position_returns_controlled_apply_fill_failure() -> None:
