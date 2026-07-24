@@ -184,7 +184,7 @@ def test_pipeline_execution_is_exact_broker_result() -> None:
     assert isinstance(result.execution, ExecutionResult)
 
 
-def test_portfolio_unchanged_and_apply_fill_never_called() -> None:
+def test_buy_filled_books_fill_via_paper_broker() -> None:
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.apply_fill = MagicMock(wraps=portfolio.apply_fill)  # type: ignore[method-assign]
     cash_before = portfolio.cash

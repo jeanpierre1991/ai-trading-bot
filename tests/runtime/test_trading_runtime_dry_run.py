@@ -199,7 +199,7 @@ def test_invalid_intent_rejected_by_dry_run_is_controlled() -> None:
     assert "Unsupported order_type" in (result.aborted_reason or "")
     assert portfolio.summary() == before
 
-def test_portfolio_intact_and_apply_fill_never_called() -> None:
+def test_sell_filled_books_fill_into_portfolio() -> None:
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.positions["AAPL"] = _long_position(quantity=Decimal("100"))
     portfolio.apply_fill = MagicMock(wraps=portfolio.apply_fill)  # type: ignore[method-assign]

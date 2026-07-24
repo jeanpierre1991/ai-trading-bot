@@ -1,13 +1,18 @@
-"""Basic trading runtime (Milestone 5–6).
+"""Basic trading runtime (Milestone 5–7).
 
-Coordinates one decision cycle: market data → strategy → risk gate →
-optional TradeIntent → optional OrderExecutor → portfolio snapshot.
-Does not place live orders or mutate portfolio state.
+Coordinates one decision cycle:
+market data → strategy → risk gate → optional TradeIntent → optional
+OrderExecutor → optional portfolio booking → portfolio snapshot.
+
+Bookable ``ExecutionResult`` values (typically ``FILLED``) are mapped with
+``execution_to_fill`` and applied via ``Portfolio.apply_fill``. Rejected or
+non-bookable executions do not mutate the portfolio. Live broker APIs are out
+of scope; paper/dry-run executors only.
 
 Supported executor wiring (inject one or none):
-- ``None`` — intent-only cycle (stage ``portfolio``)
-- ``DryRunExecutor`` — local simulated fill, no broker
-- ``BrokerOrderExecutor(PaperBroker)`` — paper trading via ``place_order``
+- ``None`` — intent-only cycle (stage ``portfolio``, no booking)
+- ``DryRunExecutor`` — simulated fill, then booking when bookable
+- ``BrokerOrderExecutor(PaperBroker)`` — paper ``place_order``, then booking
 """
 
 from __future__ import annotations
@@ -38,9 +43,10 @@ class BasicTradingRuntime(TradingRuntime):
 
     Dependencies are injected so adapters can swap market data, strategy
     evaluation, risk, portfolio, and optional order execution without changing
-    this contract. Portfolio access is read-only. Any ``OrderExecutor``
-    implementation may be supplied (``DryRunExecutor``, ``BrokerOrderExecutor``,
-    or none).
+    this contract. After a bookable fill, the portfolio is updated through
+    ``apply_fill`` and ``stage_reached`` becomes ``\"portfolio\"``. Any
+    ``OrderExecutor`` implementation may be supplied (``DryRunExecutor``,
+    ``BrokerOrderExecutor``, or none).
     """
 
     def __init__(
@@ -87,8 +93,10 @@ class BasicTradingRuntime(TradingRuntime):
     def run_once(self, context: RuntimeContext) -> PipelineResult:
         """Run one coordinated cycle and return a PipelineResult.
 
-        Expected validation failures become controlled PipelineResult values.
-        Unexpected errors are not swallowed.
+        Expected validation failures and booking ``ValueError`` values become
+        controlled ``PipelineResult`` outcomes. Unexpected errors are not
+        swallowed. Bookable fills update the portfolio before the final
+        snapshot when booking succeeds.
         """
         try:
             bars = self._market_data.get_bars(
