@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+import pytest
+
 from broker_interface.broker import PaperBroker
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from config.settings import Settings
@@ -201,6 +203,36 @@ def test_invalid_bookable_execution_returns_controlled_execution_to_fill_failure
     assert result.stage_reached == "execution"
     assert result.aborted_reason is not None
     assert "execution_to_fill failed" in result.aborted_reason
+    portfolio.apply_fill.assert_not_called()
+    assert portfolio.summary() == before
+    assert result.portfolio_snapshot == before
+
+
+def test_bookable_execution_with_none_fill_is_contract_violation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """is_bookable True + execution_to_fill None must abort, not succeed silently."""
+    monkeypatch.setattr(
+        "runtime.trading_runtime.execution_to_fill",
+        lambda _execution: None,
+    )
+
+    portfolio = Portfolio(cash=Decimal("100000"))
+    portfolio.apply_fill = MagicMock(wraps=portfolio.apply_fill)  # type: ignore[method-assign]
+    before = portfolio.summary()
+    runtime = _runtime_with_executor(
+        executor=DryRunExecutor(),
+        portfolio=portfolio,
+    )
+
+    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+
+    assert result.success is False
+    assert result.execution is not None
+    assert result.execution.status is ExecutionStatus.FILLED
+    assert result.stage_reached == "execution"
+    assert result.aborted_reason is not None
+    assert "contract violation" in result.aborted_reason
     portfolio.apply_fill.assert_not_called()
     assert portfolio.summary() == before
     assert result.portfolio_snapshot == before

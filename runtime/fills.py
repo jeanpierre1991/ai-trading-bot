@@ -27,6 +27,10 @@ def execution_to_fill(execution: ExecutionResult) -> Fill | None:
         ``Fill`` when status is ``FILLED`` and quantities/prices are valid.
         ``None`` when the result must not be booked (e.g. ``REJECTED``).
 
+    Invariant: if ``is_bookable(execution)`` is True, this must return a
+    ``Fill`` or raise ``ValueError`` — never ``None``. The Runtime treats
+    ``None`` after a bookable check as a contract violation.
+
     Raises:
         ValueError: if status is ``FILLED`` but the payload breaks booking
             invariants (non-positive filled quantity, negative price/fee,

@@ -202,31 +202,45 @@ class BasicTradingRuntime(TradingRuntime):
                     portfolio_snapshot=self._portfolio_snapshot(),
                 )
 
-            if fill is not None:
-                try:
-                    self._book_execution(fill)
-                except ValueError as exc:
-                    return PipelineResult(
-                        success=False,
-                        stage_reached="portfolio",
-                        aborted_reason=f"apply_fill failed: {exc}",
-                        signal=signal,
-                        risk_evaluation=gate.evaluation,
-                        intent=intent,
-                        execution=execution,
-                        portfolio_snapshot=self._portfolio_snapshot(),
-                    )
-                snapshot = self._portfolio_snapshot()
+            if fill is None:
                 return PipelineResult(
-                    success=True,
-                    stage_reached="portfolio",
-                    aborted_reason=None,
+                    success=False,
+                    stage_reached="execution",
+                    aborted_reason=(
+                        "bookable execution produced no fill "
+                        "(execution_to_fill contract violation)"
+                    ),
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
                     execution=execution,
-                    portfolio_snapshot=snapshot,
+                    portfolio_snapshot=self._portfolio_snapshot(),
                 )
+
+            try:
+                self._book_execution(fill)
+            except ValueError as exc:
+                return PipelineResult(
+                    success=False,
+                    stage_reached="portfolio",
+                    aborted_reason=f"apply_fill failed: {exc}",
+                    signal=signal,
+                    risk_evaluation=gate.evaluation,
+                    intent=intent,
+                    execution=execution,
+                    portfolio_snapshot=self._portfolio_snapshot(),
+                )
+            snapshot = self._portfolio_snapshot()
+            return PipelineResult(
+                success=True,
+                stage_reached="portfolio",
+                aborted_reason=None,
+                signal=signal,
+                risk_evaluation=gate.evaluation,
+                intent=intent,
+                execution=execution,
+                portfolio_snapshot=snapshot,
+            )
 
         if execution.status is ExecutionStatus.REJECTED:
             return PipelineResult(
