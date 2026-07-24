@@ -15,14 +15,16 @@ from __future__ import annotations
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from broker_interface.execution import ExecutionStatus
+from broker_interface.execution import ExecutionResult, ExecutionStatus
 from config.settings import Settings
 from core.types import OrderType, Side, SignalAction, Symbol
+from portfolio_manager.portfolio import Fill
 from risk_manager.base import RiskManager
 from risk_manager.models import RiskEvaluation
 from runtime.base import TradingRuntime
 from runtime.context import RuntimeContext
 from runtime.executor import OrderExecutor
+from runtime.fills import execution_to_fill, is_bookable
 from runtime.models import PipelineResult, TradeIntent
 from runtime.risk_gate import apply_risk_gate
 from strategy_engine.signal import StrategySignal
@@ -177,6 +179,20 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         execution = self._executor.execute(intent)
+        if is_bookable(execution):
+            self._book_execution(execution)
+            snapshot = self._portfolio_snapshot()
+            return PipelineResult(
+                success=True,
+                stage_reached="portfolio",
+                aborted_reason=None,
+                signal=signal,
+                risk_evaluation=gate.evaluation,
+                intent=intent,
+                execution=execution,
+                portfolio_snapshot=snapshot,
+            )
+
         if execution.status is ExecutionStatus.REJECTED:
             return PipelineResult(
                 success=False,
@@ -217,6 +233,19 @@ class BasicTradingRuntime(TradingRuntime):
         if not callable(summary):
             return None
         return dict(summary())
+
+    def _book_execution(self, execution: ExecutionResult) -> Fill | None:
+        """Map ``execution`` to a Fill and apply it to the portfolio.
+
+        Returns the applied ``Fill``, or ``None`` when the execution is not
+        bookable. Does not build PipelineResult or take snapshots. Propagates
+        mapper and portfolio errors without catching them.
+        """
+        fill = execution_to_fill(execution)
+        if fill is None:
+            return None
+        self._portfolio.apply_fill(fill)
+        return fill
 
     def _long_quantity(self, symbol: str) -> Decimal:
         positions = getattr(self._portfolio, "positions", None)

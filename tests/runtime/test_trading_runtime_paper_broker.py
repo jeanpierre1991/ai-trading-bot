@@ -80,13 +80,13 @@ def test_buy_market_approved_reaches_paper_broker_and_fills() -> None:
     runtime, paper, recording, portfolio = _build_runtime(
         signal=_signal(action=SignalAction.BUY, price=Decimal("100")),
     )
-    before = portfolio.summary()
+    cash_before = portfolio.cash
     quote = paper.get_quote(Symbol("AAPL"))
 
     result = runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     assert result.success is True
-    assert result.stage_reached == "execution"
+    assert result.stage_reached == "portfolio"
     assert result.intent is not None
     assert result.intent.side.value == "buy"
     assert result.execution is not None
@@ -95,7 +95,9 @@ def test_buy_market_approved_reaches_paper_broker_and_fills() -> None:
     assert result.execution.fill_price == quote
     assert result.execution.message == "Paper order filled"
     paper.place_order.assert_called_once()
-    assert portfolio.summary() == before
+    assert portfolio.cash < cash_before
+    assert portfolio.position_count == 1
+    assert "AAPL" in portfolio.positions
 
 
 def test_risk_rejection_does_not_call_broker() -> None:
@@ -195,9 +197,11 @@ def test_portfolio_unchanged_and_apply_fill_never_called() -> None:
 
     assert result.success is True
     assert result.execution is not None
-    assert portfolio.cash == cash_before
-    assert portfolio.positions == {}
-    portfolio.apply_fill.assert_not_called()
+    assert result.execution.status is ExecutionStatus.FILLED
+    portfolio.apply_fill.assert_called_once()
+    assert portfolio.cash < cash_before
+    assert portfolio.position_count == 1
+    assert "AAPL" in portfolio.positions
 
 
 def test_runtime_without_executor_still_works() -> None:

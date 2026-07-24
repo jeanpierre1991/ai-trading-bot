@@ -71,19 +71,20 @@ def test_approved_intent_executed_in_dry_run() -> None:
         signal=_signal(action=SignalAction.BUY),
         executor=executor,
     )
-    before = portfolio.summary()
+    cash_before = portfolio.cash
 
     result = runtime.run_once(RuntimeContext(symbol="AAPL"))
 
     assert result.success is True
-    assert result.stage_reached == "execution"
+    assert result.stage_reached == "portfolio"
     assert result.intent is not None
     assert isinstance(result.execution, ExecutionResult)
     assert result.execution.status is ExecutionStatus.FILLED
     assert "Dry-run" in result.execution.message
     assert result.order is None
-    assert result.portfolio_snapshot == before
-    assert portfolio.summary() == before
+    assert portfolio.cash < cash_before
+    assert portfolio.position_count == 1
+    assert "AAPL" in portfolio.positions
     executor.execute.assert_called_once_with(result.intent)
 
 
@@ -214,9 +215,10 @@ def test_portfolio_intact_and_apply_fill_never_called() -> None:
 
     assert result.success is True
     assert result.execution is not None
-    assert portfolio.cash == cash_before
-    assert portfolio.positions["AAPL"].quantity == qty_before
-    portfolio.apply_fill.assert_not_called()
+    assert result.execution.status is ExecutionStatus.FILLED
+    portfolio.apply_fill.assert_called_once()
+    assert portfolio.cash > cash_before
+    assert portfolio.positions["AAPL"].quantity < qty_before
 
 
 def test_no_network_or_broker_calls() -> None:
