@@ -180,7 +180,19 @@ class BasicTradingRuntime(TradingRuntime):
 
         execution = self._executor.execute(intent)
         if is_bookable(execution):
-            self._book_execution(execution)
+            try:
+                self._book_execution(execution)
+            except ValueError as exc:
+                return PipelineResult(
+                    success=False,
+                    stage_reached="portfolio",
+                    aborted_reason=f"apply_fill failed: {exc}",
+                    signal=signal,
+                    risk_evaluation=gate.evaluation,
+                    intent=intent,
+                    execution=execution,
+                    portfolio_snapshot=self._portfolio_snapshot(),
+                )
             snapshot = self._portfolio_snapshot()
             return PipelineResult(
                 success=True,
