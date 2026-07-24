@@ -104,3 +104,56 @@ def test_bookable_sell_without_position_returns_controlled_apply_fill_failure() 
     assert "no open position" in result.aborted_reason
     assert portfolio.summary() == before
     assert result.portfolio_snapshot == before
+
+
+def test_invalid_bookable_execution_returns_controlled_execution_to_fill_failure() -> None:
+    """FILLED with invalid qty must fail in the mapper before apply_fill."""
+
+    class InvalidFilledExecutor(OrderExecutor):
+        def execute(self, intent: TradeIntent | None) -> ExecutionResult:
+            return ExecutionResult(
+                order_id=OrderId("invalid-filled"),
+                symbol=Symbol("AAPL"),
+                side=Side.BUY,
+                requested_quantity=Decimal("10"),
+                filled_quantity=Decimal("0"),
+                fill_price=Decimal("100"),
+                fee=Decimal("0"),
+                status=ExecutionStatus.FILLED,
+                message="Invalid filled payload",
+            )
+
+    settings = Settings(max_position_size_pct=Decimal("0.05"))
+    portfolio = Portfolio(cash=Decimal("100000"))
+    portfolio.apply_fill = MagicMock(wraps=portfolio.apply_fill)  # type: ignore[method-assign]
+    before = portfolio.summary()
+    market_data = MagicMock()
+    market_data.get_bars.return_value = [object()]
+    strategy_engine = MagicMock()
+    strategy_engine.evaluate.return_value = StrategySignal(
+        symbol="AAPL",
+        action=SignalAction.BUY,
+        confidence=0.8,
+        strategy_name="ema_crossover",
+        price=Decimal("100"),
+    )
+    runtime = BasicTradingRuntime(
+        settings=settings,
+        market_data=market_data,
+        strategy_engine=strategy_engine,
+        risk_manager=BasicRiskManager(settings),
+        portfolio=portfolio,
+        executor=InvalidFilledExecutor(),
+    )
+
+    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+
+    assert result.success is False
+    assert result.execution is not None
+    assert result.execution.status is ExecutionStatus.FILLED
+    assert result.stage_reached == "execution"
+    assert result.aborted_reason is not None
+    assert "execution_to_fill failed" in result.aborted_reason
+    portfolio.apply_fill.assert_not_called()
+    assert portfolio.summary() == before
+    assert result.portfolio_snapshot == before

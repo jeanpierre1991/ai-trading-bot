@@ -15,7 +15,7 @@ from __future__ import annotations
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from broker_interface.execution import ExecutionResult, ExecutionStatus
+from broker_interface.execution import ExecutionStatus
 from config.settings import Settings
 from core.types import OrderType, Side, SignalAction, Symbol
 from portfolio_manager.portfolio import Fill
@@ -181,29 +181,44 @@ class BasicTradingRuntime(TradingRuntime):
         execution = self._executor.execute(intent)
         if is_bookable(execution):
             try:
-                self._book_execution(execution)
+                fill = execution_to_fill(execution)
             except ValueError as exc:
                 return PipelineResult(
                     success=False,
-                    stage_reached="portfolio",
-                    aborted_reason=f"apply_fill failed: {exc}",
+                    stage_reached="execution",
+                    aborted_reason=f"execution_to_fill failed: {exc}",
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                 )
-            snapshot = self._portfolio_snapshot()
-            return PipelineResult(
-                success=True,
-                stage_reached="portfolio",
-                aborted_reason=None,
-                signal=signal,
-                risk_evaluation=gate.evaluation,
-                intent=intent,
-                execution=execution,
-                portfolio_snapshot=snapshot,
-            )
+
+            if fill is not None:
+                try:
+                    self._book_execution(fill)
+                except ValueError as exc:
+                    return PipelineResult(
+                        success=False,
+                        stage_reached="portfolio",
+                        aborted_reason=f"apply_fill failed: {exc}",
+                        signal=signal,
+                        risk_evaluation=gate.evaluation,
+                        intent=intent,
+                        execution=execution,
+                        portfolio_snapshot=self._portfolio_snapshot(),
+                    )
+                snapshot = self._portfolio_snapshot()
+                return PipelineResult(
+                    success=True,
+                    stage_reached="portfolio",
+                    aborted_reason=None,
+                    signal=signal,
+                    risk_evaluation=gate.evaluation,
+                    intent=intent,
+                    execution=execution,
+                    portfolio_snapshot=snapshot,
+                )
 
         if execution.status is ExecutionStatus.REJECTED:
             return PipelineResult(
@@ -246,16 +261,12 @@ class BasicTradingRuntime(TradingRuntime):
             return None
         return dict(summary())
 
-    def _book_execution(self, execution: ExecutionResult) -> Fill | None:
-        """Map ``execution`` to a Fill and apply it to the portfolio.
+    def _book_execution(self, fill: Fill) -> Fill:
+        """Apply ``fill`` to the portfolio.
 
-        Returns the applied ``Fill``, or ``None`` when the execution is not
-        bookable. Does not build PipelineResult or take snapshots. Propagates
-        mapper and portfolio errors without catching them.
+        Does not map ExecutionResult, build PipelineResult, or take snapshots.
+        Propagates ``apply_fill`` errors without catching them.
         """
-        fill = execution_to_fill(execution)
-        if fill is None:
-            return None
         self._portfolio.apply_fill(fill)
         return fill
 
