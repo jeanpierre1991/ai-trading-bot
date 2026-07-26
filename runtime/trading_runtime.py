@@ -18,6 +18,9 @@ Supported executor wiring (inject one or none):
 - ``None`` — intent-only cycle (stage ``portfolio``, no booking)
 - ``DryRunExecutor`` — simulated fill, then booking when bookable
 - ``BrokerOrderExecutor(PaperBroker)`` — paper ``place_order``, then booking
+
+Optional ``OrderManager`` (M8.4): when injected, registers a lifecycle
+``OrderRecord`` for actionable intents and sets ``PipelineResult.order``.
 """
 
 from __future__ import annotations
@@ -26,9 +29,10 @@ import logging
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from broker_interface.execution import ExecutionStatus
+from broker_interface.execution import ExecutionResult, ExecutionStatus
 from config.settings import Settings
 from core.types import OrderType, Side, SignalAction, Symbol
+from order_manager.manager import OrderManager, OrderRecord, OrderState
 from portfolio_manager.portfolio import Fill
 from risk_manager.base import RiskManager
 from risk_manager.models import RiskEvaluation
@@ -68,6 +72,9 @@ class BasicTradingRuntime(TradingRuntime):
     Allowed executors: ``None``, ``DryRunExecutor``, or
     ``BrokerOrderExecutor(PaperBroker)``. Live mode and non-paper brokers are
     rejected by the mode policy before market data is fetched.
+
+    ``order_manager`` is optional; when omitted, ``PipelineResult.order`` stays
+    ``None`` (post-M8.3 behavior).
     """
 
     def __init__(
@@ -79,6 +86,7 @@ class BasicTradingRuntime(TradingRuntime):
         risk_manager: RiskManager,
         portfolio: Any,
         executor: OrderExecutor | None = None,
+        order_manager: OrderManager | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -86,6 +94,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._risk_manager = risk_manager
         self._portfolio = portfolio
         self._executor = executor
+        self._order_manager = order_manager
 
     @property
     def settings(self) -> Settings:
@@ -110,6 +119,10 @@ class BasicTradingRuntime(TradingRuntime):
     @property
     def executor(self) -> OrderExecutor | None:
         return self._executor
+
+    @property
+    def order_manager(self) -> OrderManager | None:
+        return self._order_manager
 
     def run_once(self, context: RuntimeContext) -> PipelineResult:
         """Run one coordinated cycle and return a PipelineResult.
@@ -314,6 +327,8 @@ class BasicTradingRuntime(TradingRuntime):
                 portfolio_snapshot=snapshot,
             )
 
+        order = self._create_order_record(intent)
+
         if self._executor is None:
             _log_runtime_event(
                 "intent_only_success",
@@ -334,10 +349,13 @@ class BasicTradingRuntime(TradingRuntime):
                 signal=signal,
                 risk_evaluation=gate.evaluation,
                 intent=intent,
+                order=order,
                 portfolio_snapshot=snapshot,
             )
 
+        order = self._mark_order_submitted(order)
         execution = self._executor.execute(intent)
+        order = self._sync_order_with_execution(order, execution)
         _log_runtime_event(
             "execution_result",
             symbol=context.symbol,
@@ -368,6 +386,7 @@ class BasicTradingRuntime(TradingRuntime):
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
+                    order=order,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                 )
@@ -397,6 +416,7 @@ class BasicTradingRuntime(TradingRuntime):
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
+                    order=order,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                 )
@@ -425,6 +445,7 @@ class BasicTradingRuntime(TradingRuntime):
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
+                    order=order,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                 )
@@ -448,6 +469,7 @@ class BasicTradingRuntime(TradingRuntime):
                 signal=signal,
                 risk_evaluation=gate.evaluation,
                 intent=intent,
+                order=order,
                 execution=execution,
                 portfolio_snapshot=snapshot,
             )
@@ -473,6 +495,7 @@ class BasicTradingRuntime(TradingRuntime):
                 signal=signal,
                 risk_evaluation=gate.evaluation,
                 intent=intent,
+                order=order,
                 execution=execution,
                 portfolio_snapshot=snapshot,
             )
@@ -490,9 +513,49 @@ class BasicTradingRuntime(TradingRuntime):
             signal=signal,
             risk_evaluation=gate.evaluation,
             intent=intent,
+            order=order,
             execution=execution,
             portfolio_snapshot=snapshot,
         )
+
+    def _create_order_record(self, intent: TradeIntent) -> OrderRecord | None:
+        """Register a PENDING order when an OrderManager is injected."""
+        if self._order_manager is None:
+            return None
+        return self._order_manager.create_order(
+            symbol=intent.symbol,
+            side=intent.side,
+            order_type=intent.order_type,
+            quantity=intent.quantity,
+            price=intent.limit_price,
+        )
+
+    def _mark_order_submitted(self, order: OrderRecord | None) -> OrderRecord | None:
+        """Move a tracked order to SUBMITTED before executor invocation."""
+        if order is None or self._order_manager is None:
+            return order
+        updated = self._order_manager.update_state(
+            str(order.order_id),
+            OrderState.SUBMITTED,
+        )
+        return updated if updated is not None else order
+
+    def _sync_order_with_execution(
+        self,
+        order: OrderRecord | None,
+        execution: ExecutionResult,
+    ) -> OrderRecord | None:
+        """Align order state with ExecutionStatus (independent of booking)."""
+        if order is None or self._order_manager is None:
+            return order
+        if execution.status is ExecutionStatus.FILLED:
+            state = OrderState.FILLED
+        elif execution.status is ExecutionStatus.REJECTED:
+            state = OrderState.REJECTED
+        else:
+            return order
+        updated = self._order_manager.update_state(str(order.order_id), state)
+        return updated if updated is not None else order
 
     def _resolve_portfolio_value(self, context: RuntimeContext) -> Decimal:
         """Prefer real Portfolio.total_value; context value is fallback only."""
