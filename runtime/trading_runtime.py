@@ -21,6 +21,9 @@ Supported executor wiring (inject one or none):
 
 Optional ``OrderManager`` (M8.4): when injected, registers a lifecycle
 ``OrderRecord`` for actionable intents and sets ``PipelineResult.order``.
+
+Optional ``AlertNotifier`` (M8.5): when injected and ``alerts_enabled``, emits
+alerts for booking success, booking/mapping failure, and execution REJECTED.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import logging
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
+from alerts.notifier import Alert, AlertLevel, AlertNotifier
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from config.settings import Settings
 from core.types import OrderType, Side, SignalAction, Symbol
@@ -75,6 +79,9 @@ class BasicTradingRuntime(TradingRuntime):
 
     ``order_manager`` is optional; when omitted, ``PipelineResult.order`` stays
     ``None`` (post-M8.3 behavior).
+
+    ``alert_notifier`` is optional; when omitted, ``PipelineResult.alerts_sent``
+    stays ``0`` (post-M8.4 behavior).
     """
 
     def __init__(
@@ -87,6 +94,7 @@ class BasicTradingRuntime(TradingRuntime):
         portfolio: Any,
         executor: OrderExecutor | None = None,
         order_manager: OrderManager | None = None,
+        alert_notifier: AlertNotifier | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -95,6 +103,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._portfolio = portfolio
         self._executor = executor
         self._order_manager = order_manager
+        self._alert_notifier = alert_notifier
 
     @property
     def settings(self) -> Settings:
@@ -123,6 +132,10 @@ class BasicTradingRuntime(TradingRuntime):
     @property
     def order_manager(self) -> OrderManager | None:
         return self._order_manager
+
+    @property
+    def alert_notifier(self) -> AlertNotifier | None:
+        return self._alert_notifier
 
     def run_once(self, context: RuntimeContext) -> PipelineResult:
         """Run one coordinated cycle and return a PipelineResult.
@@ -356,6 +369,7 @@ class BasicTradingRuntime(TradingRuntime):
         order = self._mark_order_submitted(order)
         execution = self._executor.execute(intent)
         order = self._sync_order_with_execution(order, execution)
+        alerts_sent = 0
         _log_runtime_event(
             "execution_result",
             symbol=context.symbol,
@@ -379,6 +393,13 @@ class BasicTradingRuntime(TradingRuntime):
                     success=False,
                     stage="execution",
                 )
+                alerts_sent += self._emit_runtime_alert(
+                    title="booking_failed",
+                    message=(
+                        f"symbol={context.symbol} stage=execution reason={reason}"
+                    ),
+                    level=AlertLevel.ERROR,
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="execution",
@@ -389,6 +410,7 @@ class BasicTradingRuntime(TradingRuntime):
                     order=order,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
+                    alerts_sent=alerts_sent,
                 )
 
             if fill is None:
@@ -409,6 +431,13 @@ class BasicTradingRuntime(TradingRuntime):
                     success=False,
                     stage="execution",
                 )
+                alerts_sent += self._emit_runtime_alert(
+                    title="booking_failed",
+                    message=(
+                        f"symbol={context.symbol} stage=execution reason={reason}"
+                    ),
+                    level=AlertLevel.ERROR,
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="execution",
@@ -419,6 +448,7 @@ class BasicTradingRuntime(TradingRuntime):
                     order=order,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
+                    alerts_sent=alerts_sent,
                 )
 
             try:
@@ -438,6 +468,13 @@ class BasicTradingRuntime(TradingRuntime):
                     success=False,
                     stage="portfolio",
                 )
+                alerts_sent += self._emit_runtime_alert(
+                    title="booking_failed",
+                    message=(
+                        f"symbol={context.symbol} stage=portfolio reason={reason}"
+                    ),
+                    level=AlertLevel.ERROR,
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="portfolio",
@@ -448,6 +485,7 @@ class BasicTradingRuntime(TradingRuntime):
                     order=order,
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
+                    alerts_sent=alerts_sent,
                 )
             snapshot = self._portfolio_snapshot()
             _log_runtime_event(
@@ -462,6 +500,14 @@ class BasicTradingRuntime(TradingRuntime):
                 success=True,
                 stage="portfolio",
             )
+            alerts_sent += self._emit_runtime_alert(
+                title="booking_success",
+                message=(
+                    f"symbol={context.symbol} stage=portfolio "
+                    f"status={execution.status.value}"
+                ),
+                level=AlertLevel.INFO,
+            )
             return PipelineResult(
                 success=True,
                 stage_reached="portfolio",
@@ -472,6 +518,7 @@ class BasicTradingRuntime(TradingRuntime):
                 order=order,
                 execution=execution,
                 portfolio_snapshot=snapshot,
+                alerts_sent=alerts_sent,
             )
 
         if execution.status is ExecutionStatus.REJECTED:
@@ -488,6 +535,14 @@ class BasicTradingRuntime(TradingRuntime):
                 success=False,
                 stage="execution",
             )
+            alerts_sent += self._emit_runtime_alert(
+                title="execution_rejected",
+                message=(
+                    f"symbol={context.symbol} stage=execution "
+                    f"reason={execution.message}"
+                ),
+                level=AlertLevel.WARNING,
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="execution",
@@ -498,6 +553,7 @@ class BasicTradingRuntime(TradingRuntime):
                 order=order,
                 execution=execution,
                 portfolio_snapshot=snapshot,
+                alerts_sent=alerts_sent,
             )
 
         _log_runtime_event(
@@ -517,6 +573,34 @@ class BasicTradingRuntime(TradingRuntime):
             execution=execution,
             portfolio_snapshot=snapshot,
         )
+
+    def _emit_runtime_alert(
+        self,
+        *,
+        title: str,
+        message: str,
+        level: AlertLevel,
+    ) -> int:
+        """Send one optional alert; never raises into the trading cycle.
+
+        Returns ``1`` only when ``send`` returns a truthy value.
+        """
+        if self._alert_notifier is None:
+            return 0
+        if not self._settings.alerts_enabled:
+            return 0
+        alert = Alert(
+            title=title,
+            message=message,
+            level=level,
+            source="runtime",
+        )
+        try:
+            sent = self._alert_notifier.send(alert)
+        except Exception as exc:  # noqa: BLE001 - alert channel must not abort cycle
+            _logger.warning("alert_send_failed title=%s error=%s", title, exc)
+            return 0
+        return 1 if sent else 0
 
     def _create_order_record(self, intent: TradeIntent) -> OrderRecord | None:
         """Register a PENDING order when an OrderManager is injected."""
