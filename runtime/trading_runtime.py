@@ -11,6 +11,9 @@ non-bookable executions do not mutate the portfolio.
 M8 mode policy: only paper / dry-run execution is allowed. ``trading_mode=live``,
 backtest, and non-paper broker executors are rejected before the cycle runs.
 
+M8.3 observability: structured cycle logs via ``trading_bot.runtime`` (no
+behavioral changes).
+
 Supported executor wiring (inject one or none):
 - ``None`` — intent-only cycle (stage ``portfolio``, no booking)
 - ``DryRunExecutor`` — simulated fill, then booking when bookable
@@ -19,6 +22,7 @@ Supported executor wiring (inject one or none):
 
 from __future__ import annotations
 
+import logging
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
@@ -39,6 +43,18 @@ from strategy_engine.signal import StrategySignal
 
 _QTY = Decimal("0.0001")
 _MONEY = Decimal("0.01")
+_logger = logging.getLogger("trading_bot.runtime")
+
+
+def _log_runtime_event(
+    event: str,
+    *,
+    level: int = logging.INFO,
+    **fields: object,
+) -> None:
+    """Emit a structured runtime cycle log line (observability only)."""
+    payload = " ".join(f"{key}={value}" for key, value in fields.items())
+    _logger.log(level, "%s %s", event, payload)
 
 
 class BasicTradingRuntime(TradingRuntime):
@@ -104,12 +120,36 @@ class BasicTradingRuntime(TradingRuntime):
         snapshot when booking succeeds. Mode-policy violations abort at stage
         ``\"mode\"`` before any market-data call.
         """
+        executor_name = (
+            type(self._executor).__name__ if self._executor is not None else "None"
+        )
+        mode_value = getattr(context.mode, "value", context.mode)
+        _log_runtime_event(
+            "cycle_start",
+            symbol=context.symbol,
+            mode=mode_value,
+            executor=executor_name,
+        )
+
         mode_abort = mode_policy_violation(
             settings_trading_mode=self._settings.trading_mode,
             context_mode=context.mode,
             executor=self._executor,
         )
         if mode_abort is not None:
+            _log_runtime_event(
+                "mode_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="mode",
+                reason=mode_abort,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="mode",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="mode",
@@ -123,6 +163,19 @@ class BasicTradingRuntime(TradingRuntime):
                 limit=context.bar_limit,
             )
         except ValueError as exc:
+            _log_runtime_event(
+                "market_data_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="market_data",
+                reason=str(exc),
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="market_data",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="market_data",
@@ -131,6 +184,19 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if not bars:
+            _log_runtime_event(
+                "market_data_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="market_data",
+                reason="No market bars available",
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="market_data",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="market_data",
@@ -145,6 +211,19 @@ class BasicTradingRuntime(TradingRuntime):
                 strategy_name=context.strategy_name,
             )
         except ValueError as exc:
+            _log_runtime_event(
+                "strategy_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="strategy",
+                reason=str(exc),
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="strategy",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="strategy",
@@ -164,6 +243,18 @@ class BasicTradingRuntime(TradingRuntime):
         snapshot = self._portfolio_snapshot()
 
         if signal.action is SignalAction.HOLD:
+            _log_runtime_event(
+                "hold_success",
+                symbol=context.symbol,
+                stage="risk",
+                action=signal.action.value,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=True,
+                stage="risk",
+            )
             return PipelineResult(
                 success=True,
                 stage_reached="risk",
@@ -175,6 +266,19 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if not gate.approved:
+            _log_runtime_event(
+                "risk_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="risk",
+                reason=gate.aborted_reason,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="risk",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="risk",
@@ -187,6 +291,19 @@ class BasicTradingRuntime(TradingRuntime):
 
         intent, abort_reason = self._try_build_trade_intent(signal, gate.evaluation)
         if abort_reason is not None:
+            _log_runtime_event(
+                "intent_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="intent",
+                reason=abort_reason,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="intent",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="intent",
@@ -198,6 +315,18 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if self._executor is None:
+            _log_runtime_event(
+                "intent_only_success",
+                symbol=context.symbol,
+                stage="portfolio",
+                action=signal.action.value,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=True,
+                stage="portfolio",
+            )
             return PipelineResult(
                 success=True,
                 stage_reached="portfolio",
@@ -209,14 +338,33 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         execution = self._executor.execute(intent)
+        _log_runtime_event(
+            "execution_result",
+            symbol=context.symbol,
+            status=execution.status.value,
+        )
         if is_bookable(execution):
             try:
                 fill = execution_to_fill(execution)
             except ValueError as exc:
+                reason = f"execution_to_fill failed: {exc}"
+                _log_runtime_event(
+                    "booking_failure",
+                    level=logging.WARNING,
+                    symbol=context.symbol,
+                    stage="execution",
+                    reason=reason,
+                )
+                _log_runtime_event(
+                    "cycle_end",
+                    symbol=context.symbol,
+                    success=False,
+                    stage="execution",
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="execution",
-                    aborted_reason=f"execution_to_fill failed: {exc}",
+                    aborted_reason=reason,
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
@@ -225,13 +373,27 @@ class BasicTradingRuntime(TradingRuntime):
                 )
 
             if fill is None:
+                reason = (
+                    "bookable execution produced no fill "
+                    "(execution_to_fill contract violation)"
+                )
+                _log_runtime_event(
+                    "booking_failure",
+                    level=logging.WARNING,
+                    symbol=context.symbol,
+                    stage="execution",
+                    reason=reason,
+                )
+                _log_runtime_event(
+                    "cycle_end",
+                    symbol=context.symbol,
+                    success=False,
+                    stage="execution",
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="execution",
-                    aborted_reason=(
-                        "bookable execution produced no fill "
-                        "(execution_to_fill contract violation)"
-                    ),
+                    aborted_reason=reason,
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
@@ -242,10 +404,24 @@ class BasicTradingRuntime(TradingRuntime):
             try:
                 self._book_execution(fill)
             except ValueError as exc:
+                reason = f"apply_fill failed: {exc}"
+                _log_runtime_event(
+                    "booking_failure",
+                    level=logging.WARNING,
+                    symbol=context.symbol,
+                    stage="portfolio",
+                    reason=reason,
+                )
+                _log_runtime_event(
+                    "cycle_end",
+                    symbol=context.symbol,
+                    success=False,
+                    stage="portfolio",
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="portfolio",
-                    aborted_reason=f"apply_fill failed: {exc}",
+                    aborted_reason=reason,
                     signal=signal,
                     risk_evaluation=gate.evaluation,
                     intent=intent,
@@ -253,6 +429,18 @@ class BasicTradingRuntime(TradingRuntime):
                     portfolio_snapshot=self._portfolio_snapshot(),
                 )
             snapshot = self._portfolio_snapshot()
+            _log_runtime_event(
+                "booking_success",
+                symbol=context.symbol,
+                stage="portfolio",
+                status=execution.status.value,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=True,
+                stage="portfolio",
+            )
             return PipelineResult(
                 success=True,
                 stage_reached="portfolio",
@@ -265,6 +453,19 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if execution.status is ExecutionStatus.REJECTED:
+            _log_runtime_event(
+                "execution_rejected",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="execution",
+                reason=execution.message,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="execution",
+            )
             return PipelineResult(
                 success=False,
                 stage_reached="execution",
@@ -276,6 +477,12 @@ class BasicTradingRuntime(TradingRuntime):
                 portfolio_snapshot=snapshot,
             )
 
+        _log_runtime_event(
+            "cycle_end",
+            symbol=context.symbol,
+            success=True,
+            stage="execution",
+        )
         return PipelineResult(
             success=True,
             stage_reached="execution",
