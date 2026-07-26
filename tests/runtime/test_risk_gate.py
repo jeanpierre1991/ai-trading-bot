@@ -37,6 +37,7 @@ def test_approved_signal_continues_with_risk_evaluation() -> None:
         signal,
         portfolio_value=Decimal("100000"),
         risk_manager=_manager(),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert isinstance(result, RiskGateResult)
@@ -57,6 +58,7 @@ def test_rejected_signal_stops_cleanly_and_preserves_reason() -> None:
         signal,
         portfolio_value=Decimal("0"),
         risk_manager=_manager(),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is False
@@ -87,6 +89,7 @@ def test_pipeline_unchanged_for_valid_risk_on_sell() -> None:
         signal,
         portfolio_value=Decimal("50000"),
         risk_manager=_manager(),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is True

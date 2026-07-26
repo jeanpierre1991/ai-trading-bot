@@ -95,6 +95,9 @@ def test_risk_manager_concrete_subclass_can_implement_evaluate() -> None:
             symbol: str,
             entry_price: Decimal,
             portfolio_value: Decimal,
+            open_positions: int = 0,
+            daily_pnl_pct: Decimal | None = None,
+            opens_new_exposure: bool = False,
         ) -> RiskEvaluation:
             return RiskEvaluation(
                 approved=True,
@@ -108,6 +111,7 @@ def test_risk_manager_concrete_subclass_can_implement_evaluate() -> None:
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is True

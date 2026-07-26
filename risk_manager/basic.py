@@ -1,7 +1,7 @@
-"""Basic risk manager implementation (Milestone 4).
+"""Basic risk manager implementation (canonical Runtime path).
 
-Not wired into the execution pipeline yet. Uses existing Settings for
-position sizing and documented constants for stop-loss / risk-reward.
+Combines Milestone 4/7 position sizing and SL/TP with Milestone 8.2
+operational limits (``max_open_positions``, ``max_daily_loss_pct``).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ _PRICE = Decimal("0.0001")
 
 
 class BasicRiskManager(RiskManager):
-    """Simple risk evaluation: size from Settings, fixed SL%, RR multiple for TP."""
+    """Size from Settings, fixed SL%/RR, plus operational open-position/daily-loss gates."""
 
     def __init__(
         self,
@@ -45,6 +45,9 @@ class BasicRiskManager(RiskManager):
         symbol: str,
         entry_price: Decimal,
         portfolio_value: Decimal,
+        open_positions: int = 0,
+        daily_pnl_pct: Decimal | None = None,
+        opens_new_exposure: bool = False,
     ) -> RiskEvaluation:
         if not isinstance(symbol, str) or not symbol.strip():
             return self._reject("Symbol must be a non-empty string")
@@ -60,6 +63,30 @@ class BasicRiskManager(RiskManager):
             return self._reject("max_position_size_pct must be positive")
         if max_position_pct > 1:
             return self._reject("max_position_size_pct cannot exceed 1 (100%)")
+
+        daily_loss_limit = self._settings.max_daily_loss_pct
+        if daily_loss_limit > 0:
+            if daily_pnl_pct is None:
+                return self._reject(
+                    "daily_pnl_pct is required to evaluate max_daily_loss_pct "
+                    "(fail-closed)"
+                )
+            if daily_pnl_pct <= -daily_loss_limit:
+                return self._reject(
+                    "max_daily_loss_pct exceeded: "
+                    f"daily_pnl_pct={daily_pnl_pct} limit=-{daily_loss_limit}"
+                )
+
+        max_open = self._settings.max_open_positions
+        if (
+            opens_new_exposure
+            and max_open >= 0
+            and open_positions >= max_open
+        ):
+            return self._reject(
+                "max_open_positions reached: "
+                f"open_positions={open_positions} limit={max_open}"
+            )
 
         position_size = (portfolio_value * max_position_pct).quantize(_MONEY)
         if position_size <= 0:

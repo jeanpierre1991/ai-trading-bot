@@ -61,7 +61,7 @@ def test_buy_filled_books_fill_into_portfolio() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -89,7 +89,7 @@ def test_dry_run_and_paper_share_buy_booking_runtime_contract() -> None:
         cash_before = portfolio.cash
         runtime = _runtime_with_executor(executor=executor, portfolio=portfolio)
 
-        result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+        result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
         assert result.success is True, label
         assert result.stage_reached == "portfolio", label
@@ -142,7 +142,7 @@ def test_bookable_sell_without_position_returns_controlled_apply_fill_failure() 
         executor=ForcedSellFilledExecutor(),
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.execution is not None
@@ -195,7 +195,7 @@ def test_invalid_bookable_execution_returns_controlled_execution_to_fill_failure
         executor=InvalidFilledExecutor(),
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.execution is not None
@@ -225,7 +225,7 @@ def test_bookable_execution_with_none_fill_is_contract_violation(
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.execution is not None

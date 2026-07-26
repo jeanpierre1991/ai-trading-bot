@@ -1,7 +1,8 @@
-"""Risk manager abstractions (Milestone 4 structure).
+"""Risk manager abstractions.
 
-This contract is not wired into the execution pipeline yet.
-Existing ``RiskRules`` / ``RiskAssessment`` remain the production path.
+``BasicRiskManager`` is the canonical runtime evaluation path (sizing +
+operational limits). ``RiskRules`` remains available for module health checks
+but is not executed in parallel by the Runtime.
 """
 
 from __future__ import annotations
@@ -22,5 +23,8 @@ class RiskManager(ABC):
         symbol: str,
         entry_price: Decimal,
         portfolio_value: Decimal,
+        open_positions: int = 0,
+        daily_pnl_pct: Decimal | None = None,
+        opens_new_exposure: bool = False,
     ) -> RiskEvaluation:
         """Return a risk evaluation for a proposed trade."""

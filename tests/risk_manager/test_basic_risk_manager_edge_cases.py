@@ -34,6 +34,7 @@ def test_rejects_zero_and_negative_portfolio_value(
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=portfolio_value,
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert isinstance(result, RiskEvaluation)
@@ -59,6 +60,7 @@ def test_rejects_zero_and_negative_entry_price(
         symbol="AAPL",
         entry_price=entry_price,
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert isinstance(result, RiskEvaluation)
@@ -83,6 +85,7 @@ def test_rejects_invalid_max_position_size_pct(
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert isinstance(result, RiskEvaluation)
@@ -98,6 +101,7 @@ def test_decimal_precision_is_preserved_for_odd_sizes() -> None:
         symbol="AAPL",
         entry_price=Decimal("123.4567"),
         portfolio_value=Decimal("10000.11"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is True
@@ -113,6 +117,7 @@ def test_stop_loss_below_and_take_profit_above_entry() -> None:
         symbol="AAPL",
         entry_price=entry,
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is True
@@ -128,6 +133,7 @@ def test_take_profit_respects_risk_reward_distance() -> None:
         symbol="AAPL",
         entry_price=entry,
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.stop_loss is not None
@@ -148,6 +154,7 @@ def test_rejects_empty_or_whitespace_symbol(symbol: str) -> None:
         symbol=symbol,
         entry_price=Decimal("100"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert isinstance(result, RiskEvaluation)
@@ -168,6 +175,7 @@ def test_evaluate_always_returns_risk_evaluation() -> None:
             symbol=symbol,
             entry_price=entry_price,
             portfolio_value=portfolio_value,
+            daily_pnl_pct=Decimal("0"),
         )
         assert isinstance(result, RiskEvaluation)
         assert isinstance(result.reason, str)
@@ -179,21 +187,25 @@ def test_rejection_reasons_are_explicit() -> None:
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("0"),
+        daily_pnl_pct=Decimal("0"),
     )
     price_reject = _manager().evaluate(
         symbol="AAPL",
         entry_price=Decimal("0"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
     pct_reject = _manager(Decimal("0")).evaluate(
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
     symbol_reject = _manager().evaluate(
         symbol=" ",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert "Portfolio value must be positive" == portfolio_reject.reason
@@ -208,6 +220,7 @@ def test_evaluate_is_deterministic() -> None:
         "symbol": "AAPL",
         "entry_price": Decimal("100.25"),
         "portfolio_value": Decimal("75000.50"),
+        "daily_pnl_pct": Decimal("0"),
     }
 
     first = manager.evaluate(**kwargs)

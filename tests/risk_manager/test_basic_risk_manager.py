@@ -24,6 +24,7 @@ def test_rejects_non_positive_portfolio_value(manager: BasicRiskManager) -> None
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("0"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is False
@@ -38,6 +39,7 @@ def test_rejects_non_positive_entry_price(manager: BasicRiskManager) -> None:
         symbol="AAPL",
         entry_price=Decimal("-1"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is False
@@ -52,6 +54,7 @@ def test_approves_valid_inputs_and_sizes_from_settings(manager: BasicRiskManager
         symbol="AAPL",
         entry_price=Decimal("100"),
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is True
@@ -67,6 +70,7 @@ def test_stop_loss_and_take_profit_use_documented_defaults(
         symbol="AAPL",
         entry_price=entry,
         portfolio_value=Decimal("100000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     expected_stop = (entry * (Decimal("1") - DEFAULT_STOP_LOSS_PCT)).quantize(
@@ -93,6 +97,7 @@ def test_custom_stop_loss_and_risk_reward_overrides() -> None:
         symbol="MSFT",
         entry_price=Decimal("200"),
         portfolio_value=Decimal("50000"),
+        daily_pnl_pct=Decimal("0"),
     )
 
     assert result.approved is True

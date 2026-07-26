@@ -73,7 +73,7 @@ def test_approved_intent_executed_in_dry_run() -> None:
     )
     cash_before = portfolio.cash
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -95,7 +95,7 @@ def test_hold_does_not_call_executor() -> None:
         executor=executor,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.intent is None
@@ -112,7 +112,7 @@ def test_risk_rejection_does_not_call_executor() -> None:
         executor=executor,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "risk"
@@ -124,7 +124,7 @@ def test_runtime_without_executor_keeps_existing_behavior() -> None:
     runtime, _, portfolio = _runtime(signal=_signal(action=SignalAction.BUY))
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert runtime.executor is None
     assert result.success is True
@@ -141,7 +141,7 @@ def test_executor_called_exactly_once() -> None:
         executor=executor,
     )
 
-    runtime.run_once(RuntimeContext(symbol="AAPL"))
+    runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert executor.execute.call_count == 1
 
@@ -152,7 +152,7 @@ def test_execution_result_preserved_on_pipeline_result() -> None:
         executor=DryRunExecutor(),
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.execution is not None
     assert result.execution.symbol == Symbol("AAPL")
@@ -188,7 +188,7 @@ def test_invalid_intent_rejected_by_dry_run_is_controlled() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "execution"
@@ -211,7 +211,7 @@ def test_sell_filled_books_fill_into_portfolio() -> None:
         executor=DryRunExecutor(),
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.execution is not None
@@ -228,7 +228,7 @@ def test_no_network_or_broker_calls() -> None:
         executor=DryRunExecutor(),
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert not hasattr(runtime, "broker")
@@ -243,8 +243,8 @@ def test_dry_run_result_deterministic_across_cycles() -> None:
         executor=DryRunExecutor(),
     )
 
-    first = runtime.run_once(RuntimeContext(symbol="AAPL"))
-    second = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    first = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
+    second = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert first.execution is not None
     assert second.execution is not None

@@ -157,6 +157,9 @@ class BasicTradingRuntime(TradingRuntime):
             signal,
             portfolio_value=portfolio_value,
             risk_manager=self._risk_manager,
+            open_positions=self._resolve_open_positions(),
+            daily_pnl_pct=context.daily_pnl_pct,
+            opens_new_exposure=self._would_open_new_exposure(signal),
         )
         snapshot = self._portfolio_snapshot()
 
@@ -291,6 +294,28 @@ class BasicTradingRuntime(TradingRuntime):
         if context.portfolio_value is not None:
             return Decimal(str(context.portfolio_value))
         return Decimal("0")
+
+    def _resolve_open_positions(self) -> int:
+        """Return current open position count from the injected portfolio."""
+        portfolio = self._portfolio
+        position_count = getattr(portfolio, "position_count", None)
+        if isinstance(position_count, int):
+            return position_count
+        if callable(position_count):
+            return int(position_count())
+        positions = getattr(portfolio, "positions", None)
+        if isinstance(positions, dict):
+            return len(positions)
+        return 0
+
+    def _would_open_new_exposure(self, signal: StrategySignal) -> bool:
+        """True when the signal would add a new position slot (not add-to/reduce)."""
+        if signal.action is not SignalAction.BUY:
+            return False
+        positions = getattr(self._portfolio, "positions", None)
+        if isinstance(positions, dict) and str(signal.symbol) in positions:
+            return False
+        return True
 
     def _portfolio_is_usable(self) -> bool:
         portfolio = self._portfolio

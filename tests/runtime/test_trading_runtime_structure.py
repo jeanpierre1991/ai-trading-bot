@@ -25,10 +25,11 @@ def test_runtime_context_defaults() -> None:
     assert context.strategy_name is None
     assert context.bar_limit == 100
     assert context.portfolio_value is None
+    assert context.daily_pnl_pct is None
 
 
 def test_runtime_context_is_immutable() -> None:
-    context = RuntimeContext(symbol="MSFT", mode=TradingMode.BACKTEST)
+    context = RuntimeContext(symbol="MSFT", mode=TradingMode.BACKTEST, daily_pnl_pct=Decimal("0"))
 
     with pytest.raises(FrozenInstanceError):
         context.symbol = "AAPL"  # type: ignore[misc]

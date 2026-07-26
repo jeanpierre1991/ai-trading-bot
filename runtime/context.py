@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from core.types import TradingMode
 
@@ -16,3 +17,6 @@ class RuntimeContext:
     strategy_name: str | None = None
     bar_limit: int = 100
     portfolio_value: float | None = None
+    # Pre-computed daily P&L fraction from an external source (e.g. -0.02 = -2%).
+    # Required for actionable trades when max_daily_loss_pct is active (fail-closed).
+    daily_pnl_pct: Decimal | None = None

@@ -80,7 +80,7 @@ def test_hold_signal_ends_cleanly_without_trade_intent() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert isinstance(result, PipelineResult)
     assert result.success is True
@@ -104,7 +104,7 @@ def test_buy_approved_creates_trade_intent() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -155,7 +155,7 @@ def test_sell_or_close_approved_creates_trade_intent(
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="MSFT"))
+    result = runtime.run_once(RuntimeContext(symbol="MSFT", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.intent is not None
@@ -179,7 +179,7 @@ def test_risk_rejection_preserves_reason_and_skips_intent() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "risk"
@@ -201,7 +201,7 @@ def test_provider_and_strategy_called_once() -> None:
         signal=_signal(action=SignalAction.BUY),
     )
 
-    runtime.run_once(RuntimeContext(symbol="AAPL"))
+    runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     market_data.get_bars.assert_called_once_with(symbol="AAPL", limit=100)
     strategy_engine.evaluate.assert_called_once()
@@ -218,7 +218,7 @@ def test_empty_bars_returns_controlled_pipeline_result() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "market_data"
@@ -237,7 +237,7 @@ def test_strategy_value_error_returns_controlled_pipeline_result() -> None:
     strategy_engine.evaluate.side_effect = ValueError("Unknown strategy: 'nope'")
 
     result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", strategy_name="nope"),
+        RuntimeContext(symbol="AAPL", strategy_name="nope", daily_pnl_pct=Decimal("0")),
     )
 
     assert result.success is False
@@ -257,7 +257,7 @@ def test_portfolio_not_modified_on_approved_path() -> None:
     cash_before = portfolio.cash
     positions_before = dict(portfolio.positions)
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.intent is not None
@@ -273,7 +273,7 @@ def test_pipeline_result_always_valid_shape() -> None:
     ]
     for signal in cases:
         runtime, _, _, _ = _runtime(signal=signal)
-        result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+        result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
         assert isinstance(result, PipelineResult)
         assert isinstance(result.success, bool)
         assert isinstance(result.stage_reached, str)
@@ -291,7 +291,7 @@ def test_uses_portfolio_total_value_when_context_value_missing() -> None:
         max_position_size_pct=Decimal("0.10"),
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.intent is not None

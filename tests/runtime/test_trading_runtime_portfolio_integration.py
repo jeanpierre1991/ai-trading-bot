@@ -92,7 +92,7 @@ def test_buy_uses_real_portfolio_total_value() -> None:
     )
 
     result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", portfolio_value=999_999.0),
+        RuntimeContext(symbol="AAPL", portfolio_value=999_999.0, daily_pnl_pct=Decimal("0")),
     )
 
     assert result.success is True
@@ -114,7 +114,7 @@ def test_context_portfolio_value_fallback_when_portfolio_unusable() -> None:
     )
 
     result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", portfolio_value=10_000.0),
+        RuntimeContext(symbol="AAPL", portfolio_value=10_000.0, daily_pnl_pct=Decimal("0")),
     )
 
     assert result.success is True
@@ -134,7 +134,7 @@ def test_sell_with_sufficient_position() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.intent is not None
@@ -153,7 +153,7 @@ def test_sell_without_position_returns_controlled_result() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "intent"
@@ -176,7 +176,7 @@ def test_sell_quantity_exceeding_available_returns_controlled_result() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "intent"
@@ -200,7 +200,7 @@ def test_close_with_existing_position_uses_full_quantity() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.intent is not None
@@ -225,7 +225,7 @@ def test_portfolio_unchanged_and_snapshot_matches_after_run_once() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.portfolio_snapshot == before
@@ -245,7 +245,7 @@ def test_risk_manager_receives_portfolio_total_value() -> None:
         risk_manager=risk_manager,
     )
 
-    runtime.run_once(RuntimeContext(symbol="AAPL", portfolio_value=1.0))
+    runtime.run_once(RuntimeContext(symbol="AAPL", portfolio_value=1.0, daily_pnl_pct=Decimal("0")))
 
     assert risk_manager.evaluate.call_args.kwargs["portfolio_value"] == Decimal("12345.67")
 
@@ -258,7 +258,7 @@ def test_apply_fill_not_called() -> None:
         portfolio=portfolio,
     )
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     portfolio.apply_fill.assert_not_called()
@@ -276,7 +276,7 @@ def test_no_broker_interaction() -> None:
     assert not hasattr(runtime, "broker")
     assert not hasattr(runtime, "_broker")
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.order is None

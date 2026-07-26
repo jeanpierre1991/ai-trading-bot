@@ -189,7 +189,7 @@ def test_run_once_rejects_settings_live_before_market_data() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "mode"
@@ -204,7 +204,7 @@ def test_run_once_rejects_context_live() -> None:
     runtime, market_data, _portfolio = _runtime(executor=DryRunExecutor())
 
     result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", mode=TradingMode.LIVE),
+        RuntimeContext(symbol="AAPL", mode=TradingMode.LIVE, daily_pnl_pct=Decimal("0")),
     )
 
     assert result.success is False
@@ -218,7 +218,7 @@ def test_run_once_rejects_context_backtest() -> None:
     runtime, market_data, _portfolio = _runtime(executor=None)
 
     result = runtime.run_once(
-        RuntimeContext(symbol="AAPL", mode=TradingMode.BACKTEST),
+        RuntimeContext(symbol="AAPL", mode=TradingMode.BACKTEST, daily_pnl_pct=Decimal("0")),
     )
 
     assert result.success is False
@@ -232,7 +232,7 @@ def test_run_once_allows_paper_intent_only() -> None:
     runtime, market_data, portfolio = _runtime(executor=None)
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER, daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -245,7 +245,7 @@ def test_run_once_allows_paper_dry_run() -> None:
     runtime, _market_data, portfolio = _runtime(executor=DryRunExecutor())
     cash_before = portfolio.cash
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER, daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -262,7 +262,7 @@ def test_run_once_allows_paper_broker_executor() -> None:
     )
     cash_before = portfolio.cash
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER, daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"
@@ -279,7 +279,7 @@ def test_run_once_rejects_non_paper_broker_before_execute() -> None:
     )
     before = portfolio.summary()
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", mode=TradingMode.PAPER, daily_pnl_pct=Decimal("0")))
 
     assert result.success is False
     assert result.stage_reached == "mode"
@@ -311,7 +311,7 @@ def test_run_once_still_allows_custom_non_broker_executor_stub() -> None:
     runtime, _market_data, portfolio = _runtime(executor=StubFilledExecutor())
     cash_before = portfolio.cash
 
-    result = runtime.run_once(RuntimeContext(symbol="AAPL"))
+    result = runtime.run_once(RuntimeContext(symbol="AAPL", daily_pnl_pct=Decimal("0")))
 
     assert result.success is True
     assert result.stage_reached == "portfolio"

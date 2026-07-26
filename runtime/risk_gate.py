@@ -1,7 +1,6 @@
 """Risk gate between strategy signals and downstream execution stages.
 
-This is the minimal integration point for Milestone 4: a StrategySignal is
-evaluated by BasicRiskManager before it may continue in the pipeline.
+Canonical integration point for BasicRiskManager (sizing + operational limits).
 """
 
 from __future__ import annotations
@@ -30,11 +29,15 @@ def apply_risk_gate(
     *,
     portfolio_value: Decimal,
     risk_manager: RiskManager,
+    open_positions: int = 0,
+    daily_pnl_pct: Decimal | None = None,
+    opens_new_exposure: bool = False,
 ) -> RiskGateResult:
     """Evaluate ``signal`` with ``risk_manager`` and gate continuation.
 
-    HOLD signals stop before risk sizing. Actionable signals are passed to
-    ``RiskManager.evaluate``; rejection preserves ``RiskEvaluation.reason``.
+    HOLD signals stop before risk sizing and do not require ``daily_pnl_pct``.
+    Actionable signals are passed to ``RiskManager.evaluate`` with operational
+    context; rejection preserves ``RiskEvaluation.reason``.
     """
     if signal.action is SignalAction.HOLD:
         evaluation = RiskEvaluation(
@@ -55,6 +58,9 @@ def apply_risk_gate(
         symbol=signal.symbol,
         entry_price=signal.price,
         portfolio_value=portfolio_value,
+        open_positions=open_positions,
+        daily_pnl_pct=daily_pnl_pct,
+        opens_new_exposure=opens_new_exposure,
     )
 
     if not evaluation.approved:
