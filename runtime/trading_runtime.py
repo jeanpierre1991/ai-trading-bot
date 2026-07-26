@@ -1,4 +1,4 @@
-"""Basic trading runtime (Milestone 5–7).
+"""Basic trading runtime (Milestone 5–8).
 
 Coordinates one decision cycle:
 market data → strategy → risk gate → optional TradeIntent → optional
@@ -6,8 +6,10 @@ OrderExecutor → optional portfolio booking → portfolio snapshot.
 
 Bookable ``ExecutionResult`` values (typically ``FILLED``) are mapped with
 ``execution_to_fill`` and applied via ``Portfolio.apply_fill``. Rejected or
-non-bookable executions do not mutate the portfolio. Live broker APIs are out
-of scope; paper/dry-run executors only.
+non-bookable executions do not mutate the portfolio.
+
+M8 mode policy: only paper / dry-run execution is allowed. ``trading_mode=live``,
+backtest, and non-paper broker executors are rejected before the cycle runs.
 
 Supported executor wiring (inject one or none):
 - ``None`` — intent-only cycle (stage ``portfolio``, no booking)
@@ -30,6 +32,7 @@ from runtime.base import TradingRuntime
 from runtime.context import RuntimeContext
 from runtime.executor import OrderExecutor
 from runtime.fills import execution_to_fill, is_bookable
+from runtime.mode_policy import mode_policy_violation
 from runtime.models import PipelineResult, TradeIntent
 from runtime.risk_gate import apply_risk_gate
 from strategy_engine.signal import StrategySignal
@@ -39,14 +42,16 @@ _MONEY = Decimal("0.01")
 
 
 class BasicTradingRuntime(TradingRuntime):
-    """Minimal runtime for paper / live / backtest decision cycles.
+    """Minimal runtime for paper / dry-run decision cycles (M8).
 
     Dependencies are injected so adapters can swap market data, strategy
     evaluation, risk, portfolio, and optional order execution without changing
     this contract. After a bookable fill, the portfolio is updated through
-    ``apply_fill`` and ``stage_reached`` becomes ``\"portfolio\"``. Any
-    ``OrderExecutor`` implementation may be supplied (``DryRunExecutor``,
-    ``BrokerOrderExecutor``, or none).
+    ``apply_fill`` and ``stage_reached`` becomes ``\"portfolio\"``.
+
+    Allowed executors: ``None``, ``DryRunExecutor``, or
+    ``BrokerOrderExecutor(PaperBroker)``. Live mode and non-paper brokers are
+    rejected by the mode policy before market data is fetched.
     """
 
     def __init__(
@@ -96,8 +101,22 @@ class BasicTradingRuntime(TradingRuntime):
         Expected validation failures and booking ``ValueError`` values become
         controlled ``PipelineResult`` outcomes. Unexpected errors are not
         swallowed. Bookable fills update the portfolio before the final
-        snapshot when booking succeeds.
+        snapshot when booking succeeds. Mode-policy violations abort at stage
+        ``\"mode\"`` before any market-data call.
         """
+        mode_abort = mode_policy_violation(
+            settings_trading_mode=self._settings.trading_mode,
+            context_mode=context.mode,
+            executor=self._executor,
+        )
+        if mode_abort is not None:
+            return PipelineResult(
+                success=False,
+                stage_reached="mode",
+                aborted_reason=mode_abort,
+                portfolio_snapshot=self._portfolio_snapshot(),
+            )
+
         try:
             bars = self._market_data.get_bars(
                 symbol=context.symbol,
