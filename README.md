@@ -52,6 +52,9 @@ cp .env.example .env
 
 # Run startup verification
 python main.py
+
+# Run one decision cycle (dry-run by default; requires TRADING_MODE=paper)
+python main.py run-once --symbol AAPL
 ```
 
 Expected output:
@@ -78,12 +81,41 @@ All settings are loaded from environment variables or a `.env` file. See `.env.e
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRADING_MODE` | `paper` | `paper`, `live`, or `backtest` |
+| `TRADING_MODE` | `paper` | Must be `paper` for Milestone 8 cycles (`live` / `backtest` are rejected) |
+| `MARKET_DATA_PROVIDER` | `mock` | Prefer `mock` for local/CI; `yahoo` hits the network |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `DEFAULT_SYMBOL` | `AAPL` | Default trading symbol |
 | `MAX_POSITION_SIZE_PCT` | `0.05` | Max position as % of portfolio |
+| `MAX_DAILY_LOSS_PCT` | `0.02` | Daily loss limit (fraction); cycles need `--daily-pnl-pct` |
 | `AI_PROVIDER` | `mock` | AI analysis provider |
-| `BROKER_NAME` | `paper` | Broker adapter |
+| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8) |
+
+## Run one cycle (`run-once`)
+
+Milestone 8 exposes a single decision cycle over the existing runtime factory.
+
+**Mode contract (do not confuse these):**
+
+| Axis | Value |
+|---|---|
+| `Settings.trading_mode` / `TRADING_MODE` | `paper` (required for both dry-run and paper execution) |
+| CLI / factory `execution` | `--dry-run` (default) or `--paper` (explicit) |
+| `RuntimeContext.mode` | always `PAPER` for `run-once` |
+
+```bash
+# Safe default: DryRunExecutor (no PaperBroker orders)
+python main.py run-once --symbol AAPL
+
+# Explicit paper path: BrokerOrderExecutor + PaperBroker (local only)
+python main.py run-once --paper --symbol AAPL --strategy ema_crossover
+
+# Operational risk input (default 0)
+python main.py run-once --daily-pnl-pct 0 --bar-limit 100
+```
+
+Exit codes: `0` cycle finished (including controlled `success=False`), `1` config/mode/startup failure, `2` unexpected error, `130` interrupted.
+
+See `MILESTONE_8_SUMMARY.md` for the formal Milestone 8 closure.
 
 ## Adding a New Module
 
@@ -107,15 +139,16 @@ No changes to `main.py` or `core/application.py` are required.
 
 ## Current Milestone
 
-**Milestone 1 (Complete):** Full architecture with startup verification.
+**Milestone 8 (Complete):** Operational hardening of the paper/dry-run decision loop.
 
-- All 11 domain modules load and pass health checks
-- Mock providers for market data, AI, news, and broker
-- Real indicator calculations (SMA, EMA, RSI)
-- Risk rules engine with configurable limits
-- Order and portfolio management scaffolding
+- Mode guards (paper/dry-run only; live blocked)
+- Operational risk limits on the Runtime path
+- Structured cycle logging
+- Optional OrderManager and AlertNotifier wiring
+- Composition-root factory (`create_trading_runtime`)
+- CLI `run-once` (dry-run default, paper explicit)
 
-**Milestone 2 (Pending):** Trading logic implementation — awaiting confirmation.
+Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7). Details: `MILESTONE_7_SUMMARY.md`, `MILESTONE_8_SUMMARY.md`.
 
 ## License
 
