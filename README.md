@@ -55,6 +55,9 @@ python main.py
 
 # Run one decision cycle (dry-run by default; requires TRADING_MODE=paper)
 python main.py run-once --symbol AAPL
+
+# Run a bounded multi-cycle paper/dry-run session
+python main.py run-session --cycles 3 --symbol AAPL
 ```
 
 Expected output:
@@ -81,14 +84,14 @@ All settings are loaded from environment variables or a `.env` file. See `.env.e
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRADING_MODE` | `paper` | Must be `paper` for Milestone 8 cycles (`live` / `backtest` are rejected) |
+| `TRADING_MODE` | `paper` | Must be `paper` for M8/M9 cycles (`live` / `backtest` are rejected) |
 | `MARKET_DATA_PROVIDER` | `mock` | Prefer `mock` for local/CI; `yahoo` hits the network |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `DEFAULT_SYMBOL` | `AAPL` | Default trading symbol |
 | `MAX_POSITION_SIZE_PCT` | `0.05` | Max position as % of portfolio |
-| `MAX_DAILY_LOSS_PCT` | `0.02` | Daily loss limit (fraction); cycles need `--daily-pnl-pct` |
+| `MAX_DAILY_LOSS_PCT` | `0.02` | Daily/session loss limit (fraction). `run-once` uses `--daily-pnl-pct`; `run-session` computes session PnL automatically |
 | `AI_PROVIDER` | `mock` | AI analysis provider |
-| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8) |
+| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8/M9) |
 
 ## Run one cycle (`run-once`)
 
@@ -117,6 +120,34 @@ Exit codes: `0` cycle finished (including controlled `success=False`), `1` confi
 
 See `MILESTONE_8_SUMMARY.md` for the formal Milestone 8 closure.
 
+## Run a bounded session (`run-session`)
+
+Milestone 9 adds a **bounded Paper Session Loop**: N cycles on one shared Runtime / portfolio / OrderManager via `SessionRunner`.
+
+**Same mode axes as `run-once`**, plus:
+
+| Axis | Value |
+|---|---|
+| `--cycles` | Required; integer in `1..100` (`MAX_SESSION_CYCLES`) |
+| Session PnL | Computed as `(current_equity - session_start_equity) / session_start_equity` and passed as `RuntimeContext.daily_pnl_pct` each cycle (no `--daily-pnl-pct` on this command) |
+| Fail-closed | First cycle with `PipelineResult.success=False` stops the session (`stopped_early=True`) |
+
+```bash
+# Safe default: dry-run session
+python main.py run-session --cycles 3 --symbol AAPL
+
+# Explicit paper session
+python main.py run-session --cycles 5 --paper --symbol AAPL --strategy ema_crossover --bar-limit 100
+```
+
+Notes:
+
+- Prefer `MARKET_DATA_PROVIDER=mock` for local/CI (no Yahoo/network in the M9 test suite).
+- `run-session` does **not** expose `--daily-pnl-pct`, live, backtest, or infinite/daemon loops.
+- Exit codes match `run-once`: `0` includes controlled `stopped_early`; `1` config/startup/factory/invalid cycles; `2` unexpected; `130` interrupted.
+
+See `MILESTONE_9_SUMMARY.md` for the formal Milestone 9 closure.
+
 ## Adding a New Module
 
 1. Create a package directory (e.g., `sentiment_engine/`)
@@ -139,16 +170,15 @@ No changes to `main.py` or `core/application.py` are required.
 
 ## Current Milestone
 
-**Milestone 8 (Complete):** Operational hardening of the paper/dry-run decision loop.
+**Milestone 9 (Complete):** Bounded Paper Session Loop.
 
-- Mode guards (paper/dry-run only; live blocked)
-- Operational risk limits on the Runtime path
-- Structured cycle logging
-- Optional OrderManager and AlertNotifier wiring
-- Composition-root factory (`create_trading_runtime`)
-- CLI `run-once` (dry-run default, paper explicit)
+- `SessionRunner` multi-cycle orchestration over shared Runtime/portfolio/OrderManager
+- Session equity PnL mapped to `RuntimeContext.daily_pnl_pct` (M8.2 fail-closed preserved)
+- Fail-closed stop on first controlled cycle abort
+- Integration coverage for dry-run/paper paths without network
+- CLI `run-session` (dry-run default, `--paper` explicit, `--cycles` required 1..100)
 
-Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7). Details: `MILESTONE_7_SUMMARY.md`, `MILESTONE_8_SUMMARY.md`.
+Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8). Details: `MILESTONE_7_SUMMARY.md`, `MILESTONE_8_SUMMARY.md`, `MILESTONE_9_SUMMARY.md`.
 
 ## License
 
