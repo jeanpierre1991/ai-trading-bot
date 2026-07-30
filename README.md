@@ -87,14 +87,20 @@ All settings are loaded from environment variables or a `.env` file. See `.env.e
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRADING_MODE` | `paper` | Must be `paper` for M8/M9/M10 cycles (`live` / `backtest` are rejected) |
-| `MARKET_DATA_PROVIDER` | `mock` | Prefer `mock` for local/CI; `yahoo` hits the network (not used by `run-backtest`) |
+| `TRADING_MODE` | `paper` | Must be `paper` for M8–M11 cycles (`live` / `backtest` are rejected) |
+| `MARKET_DATA_PROVIDER` | `mock` | Prefer `mock` for local/CI; `yahoo` hits the network (supervised paper only; not used by `run-backtest`) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `DEFAULT_SYMBOL` | `AAPL` | Default trading symbol |
+| `DEFAULT_TIMEFRAME` | `1h` | Bar timeframe (also used for freshness max-age derivation) |
 | `MAX_POSITION_SIZE_PCT` | `0.05` | Max position as % of portfolio |
 | `MAX_DAILY_LOSS_PCT` | `0.02` | Daily/session loss limit (fraction). `run-once` uses `--daily-pnl-pct`; `run-session` computes session PnL automatically |
+| `MARKET_DATA_FRESHNESS_ENABLED` | `true` | M11.2 fail-closed freshness gate |
+| `MARKET_DATA_FRESHNESS_BAR_PERIODS` | `2` | Periods × timeframe + slack when max age unset |
+| `MARKET_HOURS_ENABLED` | `true` | M11.3 hours policy gate |
+| `MARKET_HOURS_POLICY` | `allow` | `allow` (supervised default) or `reject` (RTH-only) |
+| `MARKET_HOURS_CALENDAR` | `xnys` | US equity XNYS calendar (coverage 2024–2027) |
 | `AI_PROVIDER` | `mock` | AI analysis provider |
-| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8/M9; unused by M10 `run-backtest`) |
+| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8–M11; unused by M10 `run-backtest`) |
 | `BACKTEST_INITIAL_CAPITAL` | `100000` | Starting cash for historical paper backtests |
 | `BACKTEST_COMMISSION_PCT` | `0.001` | Commission fraction of notional for `run-backtest` (override with `--commission-pct`) |
 
@@ -187,6 +193,48 @@ Notes:
 
 See `MILESTONE_10_SUMMARY.md` for the formal Milestone 10 closure.
 
+## Milestone 11 — Market-data paper fidelity
+
+Milestone 11 aligns **paper fills** with market-data closed-bar prices and adds fail-closed **freshness** plus **XNYS market-hours** awareness. LIVE trading remains disabled.
+
+| Sub-milestone | What it does |
+|---|---|
+| **M11.1** | `PaperBroker` fills via `ClosedBarQuoteSource` (last bar close); no static fallback when a quote source is set |
+| **M11.2** | Freshness gate after bars, before strategy; missing/invalid/stale/future-anomaly fail closed |
+| **M11.3** | XNYS session calendar; when not RTH-open, freshness ages vs last regular close; `MARKET_HOURS_POLICY=allow\|reject` |
+| **M11.4** | Supervised validation docs + mocked Yahoo E2E tests (CI stays network-free on `mock`) |
+
+### Freshness (M11.2)
+
+- Enabled by default (`MARKET_DATA_FRESHNESS_ENABLED=true`).
+- Default max age: `bar_periods × timeframe_seconds + slack` (override with `MARKET_DATA_MAX_AGE_SECONDS`).
+- During XNYS RTH, age uses wall-clock UTC; outside RTH, age uses the last completed regular-session close (M11.3).
+
+### Market hours (M11.3)
+
+- Calendar: XNYS / `America/New_York`, coverage **2024–2027** (outside → fail closed).
+- Default policy **`allow`** for supervised paper; set **`reject`** to abort entire cycles outside RTH (`stage_reached=market_hours`) before strategy.
+- Historical `run-backtest` disables hours and freshness enforcement via context flags (M10 isolation).
+
+### Supervised Yahoo paper (Checkpoint A)
+
+**Prefer `MARKET_DATA_PROVIDER=mock` for CI and routine local work.**  
+`yahoo` uses the network (yfinance): rate limits, gaps, and non-guaranteed quality apply. This is **not** LIVE trading.
+
+```bash
+# Still paper-only settings; provider is the only change
+# TRADING_MODE=paper
+# MARKET_DATA_PROVIDER=yahoo
+
+python main.py run-once --symbol AAPL
+python main.py run-once --paper --symbol AAPL --strategy ema_crossover
+python main.py run-session --cycles 2 --paper --symbol AAPL
+```
+
+Operator checklist and M11 closure details: **`MILESTONE_11_SUMMARY.md`**.
+
+Automated proof in CI uses a **mocked** Yahoo ticker factory (see `tests/runtime/test_m11_supervised_paper_path.py`) — no live Yahoo calls in the test suite.
+
 ## Adding a New Module
 
 1. Create a package directory (e.g., `sentiment_engine/`)
@@ -209,14 +257,13 @@ No changes to `main.py` or `core/application.py` are required.
 
 ## Current Milestone
 
-**Milestone 10 (Complete):** Historical Paper Backtest Loop (Option A).
+**Milestone 11 (Complete):** Market-data paper fidelity (closed-bar fills, freshness, XNYS hours, supervised Yahoo docs).
 
-- In-memory `HistoricalMarketDataProvider` + runtime adapter (network-free)
-- `BacktestRunner` reuses `run_once` with real `BacktestResult` metrics and commissions
-- Safety validation: PAPER context only; no live/`BrokerOrderExecutor` backtest path; M8 guards intact
-- CLI `run-backtest` (`--bars-file` / `--synthetic-bars`, DryRun/CommissionDryRun only)
+- M11.1–M11.3: quote-source paper pricing, freshness gate, session-aware hours
+- M11.4: Checkpoint A checklist + mocked Yahoo E2E tests; CI remains on `mock`
+- LIVE still rejected by factory / mode_policy
 
-Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8), bounded `run-session` (M9). Details: `MILESTONE_7_SUMMARY.md`, `MILESTONE_8_SUMMARY.md`, `MILESTONE_9_SUMMARY.md`, `MILESTONE_10_SUMMARY.md`.
+Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8), bounded `run-session` (M9), historical `run-backtest` (M10). Details: `MILESTONE_7_SUMMARY.md` … `MILESTONE_11_SUMMARY.md`.
 
 ## License
 
