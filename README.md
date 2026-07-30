@@ -58,6 +58,9 @@ python main.py run-once --symbol AAPL
 
 # Run a bounded multi-cycle paper/dry-run session
 python main.py run-session --cycles 3 --symbol AAPL
+
+# Run a bounded historical paper backtest (network-free bars source required)
+python main.py run-backtest --synthetic-bars 50 --max-cycles 20 --symbol AAPL
 ```
 
 Expected output:
@@ -84,14 +87,16 @@ All settings are loaded from environment variables or a `.env` file. See `.env.e
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRADING_MODE` | `paper` | Must be `paper` for M8/M9 cycles (`live` / `backtest` are rejected) |
-| `MARKET_DATA_PROVIDER` | `mock` | Prefer `mock` for local/CI; `yahoo` hits the network |
+| `TRADING_MODE` | `paper` | Must be `paper` for M8/M9/M10 cycles (`live` / `backtest` are rejected) |
+| `MARKET_DATA_PROVIDER` | `mock` | Prefer `mock` for local/CI; `yahoo` hits the network (not used by `run-backtest`) |
 | `LOG_LEVEL` | `INFO` | Logging verbosity |
 | `DEFAULT_SYMBOL` | `AAPL` | Default trading symbol |
 | `MAX_POSITION_SIZE_PCT` | `0.05` | Max position as % of portfolio |
 | `MAX_DAILY_LOSS_PCT` | `0.02` | Daily/session loss limit (fraction). `run-once` uses `--daily-pnl-pct`; `run-session` computes session PnL automatically |
 | `AI_PROVIDER` | `mock` | AI analysis provider |
-| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8/M9) |
+| `BROKER_NAME` | `paper` | Broker adapter (`paper` only in M8/M9; unused by M10 `run-backtest`) |
+| `BACKTEST_INITIAL_CAPITAL` | `100000` | Starting cash for historical paper backtests |
+| `BACKTEST_COMMISSION_PCT` | `0.001` | Commission fraction of notional for `run-backtest` (override with `--commission-pct`) |
 
 ## Run one cycle (`run-once`)
 
@@ -148,6 +153,40 @@ Notes:
 
 See `MILESTONE_9_SUMMARY.md` for the formal Milestone 9 closure.
 
+## Run a bounded historical backtest (`run-backtest`)
+
+Milestone 10 adds a **Historical Paper Backtest Loop** (Option A): replay local/synthetic bars through the existing `run_once` pipeline under `RuntimeContext.mode=PAPER`.
+
+**Mode contract (do not confuse with live/backtest settings modes):**
+
+| Axis | Value |
+|---|---|
+| `Settings.trading_mode` / `TRADING_MODE` | must remain `paper` |
+| Executor | `DryRunExecutor` (`--commission-pct 0`) or `CommissionDryRunExecutor` (default settings / positive pct) |
+| `RuntimeContext.mode` | always `PAPER` (no `TradingMode.BACKTEST`) |
+| Bars source | required `--bars-file` **or** `--synthetic-bars` (network-free; no Yahoo on this path) |
+| Bounds | series ≤ `MAX_HISTORICAL_BARS` (10_000); `--max-cycles` ≤ `MAX_BACKTEST_CYCLES` (10_000) |
+
+```bash
+# Deterministic synthetic series (CI / local, no network)
+python main.py run-backtest --synthetic-bars 50 --max-cycles 20 --symbol AAPL
+
+# Local CSV (columns: timestamp,open,high,low,close,volume)
+python main.py run-backtest --bars-file ./bars.csv --warmup-bars 30 --max-cycles 100
+
+# Commission override (fraction of notional)
+python main.py run-backtest --synthetic-bars 40 --commission-pct 0.001 --max-cycles 10
+```
+
+Notes:
+
+- `run-backtest` does **not** expose `--paper` / `--dry-run` and never wires `BrokerOrderExecutor` or a live broker.
+- It does **not** use `create_trading_runtime` factory execution backends; wiring is explicit DryRun/Commission only.
+- Printed metrics: initial capital, ending equity, return_pct, trades, wins, losses, win_rate, realized PnL, commissions paid, cycles executed.
+- Exit codes match other CLI commands: `0` success, `1` config/startup/invalid bounds, `2` unexpected, `130` interrupted.
+
+See `MILESTONE_10_SUMMARY.md` for the formal Milestone 10 closure.
+
 ## Adding a New Module
 
 1. Create a package directory (e.g., `sentiment_engine/`)
@@ -170,15 +209,14 @@ No changes to `main.py` or `core/application.py` are required.
 
 ## Current Milestone
 
-**Milestone 9 (Complete):** Bounded Paper Session Loop.
+**Milestone 10 (Complete):** Historical Paper Backtest Loop (Option A).
 
-- `SessionRunner` multi-cycle orchestration over shared Runtime/portfolio/OrderManager
-- Session equity PnL mapped to `RuntimeContext.daily_pnl_pct` (M8.2 fail-closed preserved)
-- Fail-closed stop on first controlled cycle abort
-- Integration coverage for dry-run/paper paths without network
-- CLI `run-session` (dry-run default, `--paper` explicit, `--cycles` required 1..100)
+- In-memory `HistoricalMarketDataProvider` + runtime adapter (network-free)
+- `BacktestRunner` reuses `run_once` with real `BacktestResult` metrics and commissions
+- Safety validation: PAPER context only; no live/`BrokerOrderExecutor` backtest path; M8 guards intact
+- CLI `run-backtest` (`--bars-file` / `--synthetic-bars`, DryRun/CommissionDryRun only)
 
-Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8). Details: `MILESTONE_7_SUMMARY.md`, `MILESTONE_8_SUMMARY.md`, `MILESTONE_9_SUMMARY.md`.
+Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8), bounded `run-session` (M9). Details: `MILESTONE_7_SUMMARY.md`, `MILESTONE_8_SUMMARY.md`, `MILESTONE_9_SUMMARY.md`, `MILESTONE_10_SUMMARY.md`.
 
 ## License
 

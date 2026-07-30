@@ -8,15 +8,32 @@ import logging
 import sys
 from decimal import Decimal, InvalidOperation
 
+from backtesting.bars_io import load_bars_from_csv, make_synthetic_bars
+from backtesting.commission import CommissionDryRunExecutor
+from backtesting.engine import BacktestResult
+from backtesting.runner import (
+    MAX_BACKTEST_CYCLES,
+    BacktestConfig,
+    BacktestRunner,
+)
 from config.loader import load_settings
 from config.settings import Settings
 from core.application import TradingBotApplication
 from core.exceptions import ConfigurationError
-from core.types import TradingMode
+from core.types import TimeFrame, TradingMode
+from market_data.historical_provider import (
+    MAX_HISTORICAL_BARS,
+    HistoricalMarketDataProvider,
+    HistoricalRuntimeMarketData,
+)
+from portfolio_manager.portfolio import Portfolio
+from risk_manager.basic import BasicRiskManager
 from runtime.context import RuntimeContext
+from runtime.dry_run import DryRunExecutor
 from runtime.factory import create_trading_runtime_from_app
 from runtime.models import PipelineResult
 from runtime.session import MAX_SESSION_CYCLES, SessionConfig, SessionResult, SessionRunner
+from runtime.trading_runtime import BasicTradingRuntime
 from utilities.logging_setup import setup_logging
 
 logger = logging.getLogger("trading_bot.main")
@@ -114,6 +131,74 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Number of bars to request per cycle (default: 100)",
     )
 
+    run_backtest_parser = subparsers.add_parser(
+        "run-backtest",
+        help=(
+            "Run a bounded historical paper backtest (Milestone 10); "
+            "DryRun/CommissionDryRun only — no broker path"
+        ),
+    )
+    bars_source = run_backtest_parser.add_mutually_exclusive_group(required=True)
+    bars_source.add_argument(
+        "--bars-file",
+        default=None,
+        help="Local OHLCV CSV path (network-free; required columns: "
+        "timestamp,open,high,low,close,volume)",
+    )
+    bars_source.add_argument(
+        "--synthetic-bars",
+        type=int,
+        default=None,
+        help=(
+            "Generate N deterministic synthetic bars "
+            f"(1..{MAX_HISTORICAL_BARS}; network-free)"
+        ),
+    )
+    run_backtest_parser.add_argument(
+        "--symbol",
+        default=None,
+        help="Symbol for the backtest (default: settings.default_symbol)",
+    )
+    run_backtest_parser.add_argument(
+        "--strategy",
+        default=None,
+        help="Strategy name (default: strategy engine default)",
+    )
+    run_backtest_parser.add_argument(
+        "--bar-limit",
+        type=int,
+        default=100,
+        help="Bars requested per cycle (default: 100)",
+    )
+    run_backtest_parser.add_argument(
+        "--warmup-bars",
+        type=int,
+        default=None,
+        help="Visible bars before the first cycle (default: min(bar-limit, series length))",
+    )
+    run_backtest_parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help=(
+            "Hard cap on run_once cycles "
+            f"(default: series length; max {MAX_BACKTEST_CYCLES})"
+        ),
+    )
+    run_backtest_parser.add_argument(
+        "--commission-pct",
+        default=None,
+        help=(
+            "Commission as a fraction of notional "
+            "(default: settings.backtest_commission_pct)"
+        ),
+    )
+    run_backtest_parser.add_argument(
+        "--timeframe",
+        default=None,
+        help="Bar timeframe for the series (default: settings.default_timeframe)",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -169,6 +254,27 @@ def _print_session_result(result: SessionResult) -> None:
             f"cycle[{index}] success={cycle.success} "
             f"stage={cycle.stage_reached} aborted_reason={cycle.aborted_reason}"
         )
+    print("\n".join(lines))
+
+
+def _print_backtest_result(result: BacktestResult) -> None:
+    """Print BacktestResult metrics (M10.2); no secrets."""
+    lines = [
+        "=== run-backtest result ===",
+        f"strategy_name={result.strategy_name}",
+        f"initial_capital={result.initial_capital}",
+        f"ending_equity={result.ending_equity}",
+        f"return_pct={result.return_pct}",
+        f"total_trades={result.total_trades}",
+        f"wins={result.wins}",
+        f"losses={result.losses}",
+        f"win_rate={result.win_rate}",
+        f"realized_pnl={result.realized_pnl}",
+        f"commissions_paid={result.commissions_paid}",
+        f"cycles_executed={result.cycles_executed}",
+        f"start_date={result.start_date.isoformat()}",
+        f"end_date={result.end_date.isoformat()}",
+    ]
     print("\n".join(lines))
 
 
@@ -278,6 +384,140 @@ def _run_session_command(settings: Settings, args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _parse_commission_pct(settings: Settings, raw: str | None) -> Decimal:
+    if raw is None:
+        return settings.backtest_commission_pct
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, ValueError) as exc:
+        raise ConfigurationError(f"Invalid --commission-pct={raw!r}") from exc
+    if value < 0:
+        raise ConfigurationError(f"--commission-pct must be >= 0; got {value}")
+    return value
+
+
+def _resolve_backtest_timeframe(settings: Settings, raw: str | None) -> TimeFrame:
+    text = (raw or settings.default_timeframe).strip()
+    try:
+        return TimeFrame(text)
+    except ValueError as exc:
+        raise ConfigurationError(f"Invalid timeframe={text!r}") from exc
+
+
+def _load_backtest_bars(
+    settings: Settings,
+    args: argparse.Namespace,
+    *,
+    symbol: str,
+    timeframe: TimeFrame,
+) -> list:
+    if args.bars_file is not None:
+        return load_bars_from_csv(
+            args.bars_file,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+    if args.synthetic_bars is not None:
+        return make_synthetic_bars(
+            args.synthetic_bars,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+    raise ConfigurationError(
+        "run-backtest requires --bars-file or --synthetic-bars "
+        "(Yahoo/network market data is not used on this path)"
+    )
+
+
+def _run_backtest_command(settings: Settings, args: argparse.Namespace) -> int:
+    """Bounded historical paper backtest (Option A — no factory broker path)."""
+    if settings.trading_mode != "paper":
+        raise ConfigurationError(
+            f"run-backtest requires trading_mode='paper'; got {settings.trading_mode!r} "
+            "(TradingMode.BACKTEST / trading_mode=backtest are not used)"
+        )
+    if args.bar_limit <= 0:
+        raise ConfigurationError("--bar-limit must be a positive integer")
+    if args.warmup_bars is not None and (
+        not isinstance(args.warmup_bars, int)
+        or isinstance(args.warmup_bars, bool)
+        or args.warmup_bars < 1
+    ):
+        raise ConfigurationError(
+            f"--warmup-bars must be a positive int; got {args.warmup_bars!r}"
+        )
+    if args.max_cycles is not None and (
+        not isinstance(args.max_cycles, int)
+        or isinstance(args.max_cycles, bool)
+        or args.max_cycles < 1
+        or args.max_cycles > MAX_BACKTEST_CYCLES
+    ):
+        raise ConfigurationError(
+            f"--max-cycles must be an int in 1..{MAX_BACKTEST_CYCLES}; "
+            f"got {args.max_cycles!r}"
+        )
+
+    symbol = args.symbol or settings.default_symbol
+    timeframe = _resolve_backtest_timeframe(settings, args.timeframe)
+    commission_pct = _parse_commission_pct(settings, args.commission_pct)
+    bars = _load_backtest_bars(settings, args, symbol=symbol, timeframe=timeframe)
+
+    provider = HistoricalMarketDataProvider(
+        bars,
+        symbol=symbol,
+        timeframe=timeframe,
+        initial_end_exclusive=0,
+    )
+    market_data = HistoricalRuntimeMarketData(provider)
+
+    app = TradingBotApplication(settings)
+    report = app.startup()
+    if not report.success:
+        print(report.summary())
+        app.shutdown()
+        return 1
+
+    exit_code = 0
+    try:
+        strategy_engine = app.get_module("strategy_engine")
+        # Always simulation: CommissionDryRunExecutor (fee may be 0) — never BrokerOrderExecutor.
+        executor: DryRunExecutor | CommissionDryRunExecutor
+        if commission_pct == 0:
+            executor = DryRunExecutor()
+        else:
+            executor = CommissionDryRunExecutor(commission_pct)
+
+        runtime = BasicTradingRuntime(
+            settings=settings,
+            market_data=market_data,
+            strategy_engine=strategy_engine,
+            risk_manager=BasicRiskManager(settings),
+            portfolio=Portfolio(cash=settings.backtest_initial_capital),
+            executor=executor,
+            order_manager=None,
+            alert_notifier=None,
+        )
+        result = BacktestRunner(runtime, historical=market_data).run(
+            BacktestConfig(
+                symbol=symbol,
+                strategy_name=args.strategy,
+                bar_limit=args.bar_limit,
+                warmup_bars=args.warmup_bars,
+                max_cycles=args.max_cycles,
+            )
+        )
+        _print_backtest_result(result)
+    except ConfigurationError:
+        raise
+    except Exception:
+        logger.exception("Unexpected error during run-backtest")
+        exit_code = 2
+    finally:
+        app.shutdown()
+
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -297,6 +537,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "run-session":
             return _run_session_command(settings, args)
+
+        if args.command == "run-backtest":
+            return _run_backtest_command(settings, args)
 
         app = TradingBotApplication(settings)
         return _run_startup(app, health_only=args.health_only)

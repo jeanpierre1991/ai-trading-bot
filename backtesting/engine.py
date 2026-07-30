@@ -9,6 +9,8 @@ from decimal import Decimal
 
 @dataclass(frozen=True)
 class BacktestResult:
+    """Outcome of a synthetic dry-check or a real historical backtest run."""
+
     strategy_name: str
     start_date: datetime
     end_date: datetime
@@ -17,6 +19,21 @@ class BacktestResult:
     total_return_pct: Decimal
     total_trades: int
     win_rate: Decimal
+    wins: int = 0
+    losses: int = 0
+    realized_pnl: Decimal = Decimal("0")
+    commissions_paid: Decimal = Decimal("0")
+    cycles_executed: int = 0
+
+    @property
+    def ending_equity(self) -> Decimal:
+        """Alias for ``final_capital`` (M10.2 metrics naming)."""
+        return self.final_capital
+
+    @property
+    def return_pct(self) -> Decimal:
+        """Alias for ``total_return_pct`` (M10.2 metrics naming)."""
+        return self.total_return_pct
 
     def to_dict(self) -> dict[str, str | int | float]:
         return {
@@ -25,9 +42,16 @@ class BacktestResult:
             "end_date": self.end_date.isoformat(),
             "initial_capital": float(self.initial_capital),
             "final_capital": float(self.final_capital),
+            "ending_equity": float(self.final_capital),
             "total_return_pct": float(self.total_return_pct),
+            "return_pct": float(self.total_return_pct),
             "total_trades": self.total_trades,
+            "wins": self.wins,
+            "losses": self.losses,
             "win_rate": float(self.win_rate),
+            "realized_pnl": float(self.realized_pnl),
+            "commissions_paid": float(self.commissions_paid),
+            "cycles_executed": self.cycles_executed,
         }
 
 
