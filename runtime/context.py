@@ -20,3 +20,5 @@ class RuntimeContext:
     # Pre-computed daily P&L fraction from an external source (e.g. -0.02 = -2%).
     # Required for actionable trades when max_daily_loss_pct is active (fail-closed).
     daily_pnl_pct: Decimal | None = None
+    # M11.2: None → use settings.market_data_freshness_enabled; False for M10 backtests.
+    enforce_market_data_freshness: bool | None = None

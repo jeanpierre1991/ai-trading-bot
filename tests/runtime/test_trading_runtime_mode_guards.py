@@ -37,7 +37,10 @@ def _runtime(
     settings: Settings | None = None,
     executor: OrderExecutor | None = None,
 ) -> tuple[BasicTradingRuntime, MagicMock, Portfolio]:
-    settings = settings or Settings(trading_mode="paper")
+    settings = settings or Settings(
+        trading_mode="paper",
+        market_data_freshness_enabled=False,
+    )
     portfolio = Portfolio(cash=Decimal("100000"))
     market_data = MagicMock()
     market_data.get_bars.return_value = [object()]

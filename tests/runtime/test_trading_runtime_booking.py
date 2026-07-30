@@ -37,7 +37,10 @@ def _runtime_with_executor(
     executor: OrderExecutor,
     portfolio: Portfolio,
 ) -> BasicTradingRuntime:
-    settings = Settings(max_position_size_pct=Decimal("0.05"))
+    settings = Settings(
+        max_position_size_pct=Decimal("0.05"),
+        market_data_freshness_enabled=False,
+    )
     market_data = MagicMock()
     market_data.get_bars.return_value = [object()]
     strategy_engine = MagicMock()
@@ -119,7 +122,10 @@ def test_bookable_sell_without_position_returns_controlled_apply_fill_failure() 
                 message="Forced filled sell",
             )
 
-    settings = Settings(max_position_size_pct=Decimal("0.05"))
+    settings = Settings(
+        max_position_size_pct=Decimal("0.05"),
+        market_data_freshness_enabled=False,
+    )
     portfolio = Portfolio(cash=Decimal("100000"))
     before = portfolio.summary()
     market_data = MagicMock()
@@ -172,7 +178,10 @@ def test_invalid_bookable_execution_returns_controlled_execution_to_fill_failure
                 message="Invalid filled payload",
             )
 
-    settings = Settings(max_position_size_pct=Decimal("0.05"))
+    settings = Settings(
+        max_position_size_pct=Decimal("0.05"),
+        market_data_freshness_enabled=False,
+    )
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.apply_fill = MagicMock(wraps=portfolio.apply_fill)  # type: ignore[method-assign]
     before = portfolio.summary()

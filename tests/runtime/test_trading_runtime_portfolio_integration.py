@@ -66,7 +66,10 @@ def _build_runtime(
     max_position_size_pct: Decimal = Decimal("0.05"),
     risk_manager: BasicRiskManager | MagicMock | None = None,
 ) -> tuple[BasicTradingRuntime, MagicMock, MagicMock]:
-    settings = Settings(max_position_size_pct=max_position_size_pct)
+    settings = Settings(
+        max_position_size_pct=max_position_size_pct,
+        market_data_freshness_enabled=False,
+    )
     market_data = MagicMock()
     market_data.get_bars.return_value = [object()]
     strategy_engine = MagicMock()

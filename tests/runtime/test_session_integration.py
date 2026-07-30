@@ -41,9 +41,10 @@ def _signal(
 def _mock_market_data(*, close: Decimal = Decimal("100")) -> MagicMock:
     """Bars expose a closed price so M11.1 ClosedBarQuoteSource can fill paper orders."""
     market_data = MagicMock()
+    now = datetime.now(timezone.utc)
     market_data.get_bars.return_value = [
         MarketBar(
-            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            timestamp=now,
             open=close,
             high=close + Decimal("1"),
             low=close - Decimal("1"),

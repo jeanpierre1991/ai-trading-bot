@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from market_data.freshness import (
+    FreshnessResult,
+    evaluate_bar_freshness,
+    evaluate_last_bar_freshness,
+    normalize_bar_timestamp,
+    resolve_max_age_seconds,
+    timeframe_seconds,
+    utc_now,
+)
 from market_data.historical_provider import (
     MAX_HISTORICAL_BARS,
     HistoricalMarketDataProvider,
@@ -15,6 +24,7 @@ MODULE_CLASS = MarketDataModule
 
 __all__ = [
     "MAX_HISTORICAL_BARS",
+    "FreshnessResult",
     "HistoricalMarketDataProvider",
     "HistoricalRuntimeMarketData",
     "MarketDataModule",
@@ -22,6 +32,12 @@ __all__ = [
     "MockMarketDataProvider",
     "YahooFinanceProvider",
     "MODULE_CLASS",
+    "evaluate_bar_freshness",
+    "evaluate_last_bar_freshness",
+    "normalize_bar_timestamp",
+    "resolve_max_age_seconds",
+    "timeframe_seconds",
+    "utc_now",
 ]
 
 

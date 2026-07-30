@@ -97,6 +97,7 @@ def _paper_runtime(
         max_position_size_pct=Decimal("0.10"),
         backtest_initial_capital=Decimal("100000"),
         backtest_commission_pct=Decimal("0.001"),
+        market_data_freshness_enabled=False,
     )
     portfolio = portfolio or Portfolio(cash=settings.backtest_initial_capital)
     return BasicTradingRuntime(

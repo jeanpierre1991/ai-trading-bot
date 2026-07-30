@@ -1,15 +1,22 @@
-"""Market-data-derived quote abstractions for paper fills (Milestone 11.1).
+"""Market-data-derived quote abstractions for paper fills (Milestone 11.1 / 11.2).
 
 ``PaperBroker`` never contacts the network. When a ``QuoteSource`` is injected,
 fill prices come exclusively from that abstraction (latest closed bar close).
+M11.2 optionally validates last-bar freshness with the shared freshness helpers.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from core.types import Symbol
+from market_data.freshness import (
+    evaluate_bar_freshness,
+    resolve_max_age_seconds,
+    utc_now,
+)
 
 _PRICE = Decimal("0.0001")
 
@@ -39,7 +46,19 @@ class ClosedBarQuoteSource:
     Does not perform network calls itself.
     """
 
-    def __init__(self, market_data: Any, *, bar_limit: int = 1) -> None:
+    def __init__(
+        self,
+        market_data: Any,
+        *,
+        bar_limit: int = 1,
+        freshness_enabled: bool = True,
+        timeframe: str = "1h",
+        max_age_seconds: int | None = None,
+        bar_periods: int = 2,
+        slack_seconds: int = 120,
+        future_skew_seconds: int = 60,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if market_data is None:
             raise QuoteUnavailableError("market_data is required for ClosedBarQuoteSource")
         if not isinstance(bar_limit, int) or isinstance(bar_limit, bool) or bar_limit < 1:
@@ -48,10 +67,21 @@ class ClosedBarQuoteSource:
             )
         self._market_data = market_data
         self._bar_limit = bar_limit
+        self._freshness_enabled = freshness_enabled
+        self._timeframe = timeframe
+        self._max_age_seconds = max_age_seconds
+        self._bar_periods = bar_periods
+        self._slack_seconds = slack_seconds
+        self._future_skew_seconds = future_skew_seconds
+        self._clock = clock if clock is not None else utc_now
 
     @property
     def market_data(self) -> Any:
         return self._market_data
+
+    @property
+    def freshness_enabled(self) -> bool:
+        return self._freshness_enabled
 
     def get_closed_bar_price(self, symbol: Symbol | str) -> Decimal:
         resolved = str(symbol).strip() if symbol is not None else ""
@@ -61,8 +91,6 @@ class ClosedBarQuoteSource:
         try:
             bars = self._market_data.get_bars(symbol=resolved, limit=self._bar_limit)
         except TypeError:
-            # Some providers use positional (symbol, timeframe, limit); not used
-            # by runtime MD. Surface as unavailable rather than inventing a price.
             raise QuoteUnavailableError(
                 f"market_data.get_bars failed for symbol {resolved!r}"
             ) from None
@@ -83,6 +111,28 @@ class ClosedBarQuoteSource:
                 f"closed bar symbol {bar_symbol!r} does not match requested "
                 f"{resolved!r}"
             )
+
+        if self._freshness_enabled:
+            try:
+                max_age = resolve_max_age_seconds(
+                    max_age_seconds=self._max_age_seconds,
+                    timeframe=self._timeframe,
+                    bar_periods=self._bar_periods,
+                    slack_seconds=self._slack_seconds,
+                )
+            except ValueError as exc:
+                raise QuoteUnavailableError(f"freshness config invalid: {exc}") from exc
+            freshness = evaluate_bar_freshness(
+                bar,
+                now_utc=self._clock(),
+                max_age_seconds=max_age,
+                future_skew_seconds=self._future_skew_seconds,
+            )
+            if not freshness.ok:
+                raise QuoteUnavailableError(
+                    f"stale or unverifiable closed bar for symbol {resolved!r}: "
+                    f"{freshness.classification}: {freshness.reason}"
+                )
 
         try:
             close = _bar_close(bar)
@@ -105,7 +155,6 @@ def _bar_symbol(bar: Any) -> str:
 
 def _bar_close(bar: Any) -> Decimal:
     if hasattr(bar, "close") and not isinstance(bar, type):
-        # MarketBar.close property or object attribute
         try:
             value = bar.close
             if not callable(value):

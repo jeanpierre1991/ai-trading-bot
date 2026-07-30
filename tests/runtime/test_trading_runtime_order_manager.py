@@ -42,6 +42,7 @@ def _settings() -> Settings:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
 
 

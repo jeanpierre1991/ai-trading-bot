@@ -50,6 +50,7 @@ def _runtime(
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = portfolio or Portfolio(cash=Decimal("100000"))
     market_data = MagicMock()
@@ -133,6 +134,7 @@ def test_risk_abort_logs_warning_without_executor_or_portfolio_mutation(
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     before = portfolio.summary()

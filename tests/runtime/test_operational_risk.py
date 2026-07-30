@@ -84,6 +84,7 @@ def test_buy_allowed_below_max_open_positions() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=2,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.positions["MSFT"] = _long_position(symbol="MSFT")
@@ -111,6 +112,7 @@ def test_buy_rejected_when_max_open_positions_reached() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=1,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.positions["MSFT"] = _long_position(symbol="MSFT")
@@ -143,6 +145,7 @@ def test_sell_not_blocked_only_by_max_open_positions() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=1,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.positions["AAPL"] = _long_position(quantity=Decimal("100"))
@@ -172,6 +175,7 @@ def test_buy_allowed_when_daily_pnl_below_loss_limit() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     runtime, _ = _runtime(
@@ -197,6 +201,7 @@ def test_buy_allowed_when_daily_pnl_is_positive_gain() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     cash_before = portfolio.cash
@@ -225,6 +230,7 @@ def test_buy_rejected_when_daily_loss_equals_limit() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     before = portfolio.summary()
@@ -254,6 +260,7 @@ def test_buy_rejected_when_daily_loss_exceeds_limit() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     before = portfolio.summary()
@@ -283,6 +290,7 @@ def test_actionable_trade_fail_closed_when_daily_pnl_pct_missing() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     before = portfolio.summary()
@@ -310,6 +318,7 @@ def test_hold_not_blocked_by_missing_daily_pnl_pct() -> None:
         trading_mode="paper",
         max_position_size_pct=Decimal("0.05"),
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     before = portfolio.summary()
@@ -336,6 +345,7 @@ def test_m7_sizing_and_sl_tp_unchanged_when_operational_checks_pass() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     manager = BasicRiskManager(settings)
     entry = Decimal("100")
@@ -369,6 +379,7 @@ def test_buy_into_existing_symbol_not_blocked_by_max_open_positions() -> None:
         max_position_size_pct=Decimal("0.05"),
         max_open_positions=1,
         max_daily_loss_pct=Decimal("0.02"),
+        market_data_freshness_enabled=False,
     )
     portfolio = Portfolio(cash=Decimal("100000"))
     portfolio.positions["AAPL"] = _long_position(quantity=Decimal("5"))

@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     # Market data
     market_data_provider: str = "mock"
     market_data_api_key: str = ""
+    # M11.2 freshness (wall-clock; not market-hours — see M11.3)
+    market_data_freshness_enabled: bool = True
+    market_data_max_age_seconds: int | None = None
+    market_data_freshness_bar_periods: int = 2
+    market_data_freshness_slack_seconds: int = 120
+    market_data_future_skew_seconds: int = 60
 
     # AI engine
     ai_provider: str = "mock"

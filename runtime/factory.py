@@ -231,7 +231,15 @@ def _resolve_paper_broker(
     broker: PaperBroker | None,
     market_data: Any,
 ) -> PaperBroker:
-    quote_source = ClosedBarQuoteSource(market_data)
+    quote_source = ClosedBarQuoteSource(
+        market_data,
+        freshness_enabled=settings.market_data_freshness_enabled,
+        timeframe=settings.default_timeframe,
+        max_age_seconds=settings.market_data_max_age_seconds,
+        bar_periods=settings.market_data_freshness_bar_periods,
+        slack_seconds=settings.market_data_freshness_slack_seconds,
+        future_skew_seconds=settings.market_data_future_skew_seconds,
+    )
 
     if broker is not None:
         if not isinstance(broker, PaperBroker):

@@ -1,4 +1,4 @@
-"""M11.1 PaperBroker QuoteSource / closed-bar fill price tests."""
+"""M11.1/M11.2 PaperBroker QuoteSource / closed-bar fill price tests."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from broker_interface.quotes import (
     ClosedBarQuoteSource,
     QuoteUnavailableError,
 )
+from config.settings import Settings
 from core.types import MarketBar, OrderType, Side, SignalAction, Symbol
 from portfolio_manager.portfolio import Portfolio
 from risk_manager.basic import BasicRiskManager
@@ -22,16 +23,19 @@ from runtime.broker_executor import BrokerOrderExecutor
 from runtime.context import RuntimeContext
 from runtime.trading_runtime import BasicTradingRuntime
 from strategy_engine.signal import StrategySignal
-from config.settings import Settings
+
+_FIXED_NOW = datetime(2026, 7, 13, 12, 0, tzinfo=timezone.utc)
+_FRESH_TS = datetime(2026, 7, 13, 11, 0, tzinfo=timezone.utc)
 
 
 def _bar(
     *,
     symbol: str = "AAPL",
     close: Decimal = Decimal("123.45"),
+    timestamp: datetime = _FRESH_TS,
 ) -> MarketBar:
     return MarketBar(
-        timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        timestamp=timestamp,
         open=close,
         high=close + Decimal("1"),
         low=close - Decimal("1"),
@@ -54,6 +58,19 @@ def _request(
         order_type=OrderType.MARKET,
         quantity=quantity,
     )
+
+
+def _quote_source(md: MagicMock, **kwargs: object) -> ClosedBarQuoteSource:
+    defaults: dict[str, object] = {
+        "clock": lambda: _FIXED_NOW,
+        "freshness_enabled": True,
+        "timeframe": "1h",
+        "bar_periods": 2,
+        "slack_seconds": 120,
+        "future_skew_seconds": 60,
+    }
+    defaults.update(kwargs)
+    return ClosedBarQuoteSource(md, **defaults)  # type: ignore[arg-type]
 
 
 def test_paper_broker_uses_injected_quote_source_price() -> None:
@@ -82,7 +99,7 @@ def test_quote_source_symbol_specific_prices() -> None:
         return []
 
     md.get_bars.side_effect = _bars
-    source = ClosedBarQuoteSource(md)
+    source = _quote_source(md)
     broker = PaperBroker(buying_power=Decimal("1000000"), quote_source=source)
     broker.connect()
 
@@ -100,7 +117,7 @@ def test_missing_quote_rejects_safely_no_static_fallback() -> None:
     md.get_bars.return_value = []
     broker = PaperBroker(
         buying_power=Decimal("100000"),
-        quote_source=ClosedBarQuoteSource(md),
+        quote_source=_quote_source(md),
     )
     broker.connect()
     before = broker.get_status().buying_power
@@ -131,7 +148,7 @@ def test_invalid_non_positive_quote_rejects() -> None:
 def test_closed_bar_quote_source_rejects_non_positive_close() -> None:
     md = MagicMock()
     md.get_bars.return_value = [_bar(close=Decimal("0"))]
-    source = ClosedBarQuoteSource(md)
+    source = _quote_source(md, freshness_enabled=False)
 
     with pytest.raises(QuoteUnavailableError, match="non-positive"):
         source.get_closed_bar_price("AAPL")
@@ -140,7 +157,7 @@ def test_closed_bar_quote_source_rejects_non_positive_close() -> None:
 def test_closed_bar_quote_source_rejects_non_finite_close() -> None:
     md = MagicMock()
     md.get_bars.return_value = [_bar(close=Decimal("NaN"))]
-    source = ClosedBarQuoteSource(md)
+    source = _quote_source(md, freshness_enabled=False)
 
     with pytest.raises(QuoteUnavailableError, match="non-finite"):
         source.get_closed_bar_price("AAPL")
@@ -149,10 +166,39 @@ def test_closed_bar_quote_source_rejects_non_finite_close() -> None:
 def test_closed_bar_quote_source_rejects_symbol_mismatch() -> None:
     md = MagicMock()
     md.get_bars.return_value = [_bar(symbol="MSFT", close=Decimal("10"))]
-    source = ClosedBarQuoteSource(md)
+    source = _quote_source(md, freshness_enabled=False)
 
     with pytest.raises(QuoteUnavailableError, match="does not match"):
         source.get_closed_bar_price("AAPL")
+
+
+def test_closed_bar_quote_source_rejects_stale_bar() -> None:
+    md = MagicMock()
+    stale_ts = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)  # age > 2h+120s
+    md.get_bars.return_value = [_bar(timestamp=stale_ts)]
+    source = _quote_source(md)
+
+    with pytest.raises(QuoteUnavailableError, match="stale"):
+        source.get_closed_bar_price("AAPL")
+
+
+def test_stale_quote_rejects_without_static_fallback() -> None:
+    md = MagicMock()
+    stale_ts = datetime(2026, 7, 13, 8, 0, tzinfo=timezone.utc)
+    md.get_bars.return_value = [_bar(timestamp=stale_ts, close=Decimal("150"))]
+    broker = PaperBroker(
+        buying_power=Decimal("100000"),
+        quote_source=_quote_source(md),
+    )
+    broker.connect()
+    before = broker.get_status().buying_power
+
+    result = broker.place_order(_request())
+
+    assert result.status is ExecutionStatus.REJECTED
+    assert result.fill_price == Decimal("0")
+    assert result.fill_price != Decimal("190.25")
+    assert broker.get_status().buying_power == before
 
 
 def test_legacy_paper_broker_without_quote_source_keeps_static_map() -> None:
@@ -170,10 +216,18 @@ def test_integration_closed_bar_price_becomes_paper_fill_price() -> None:
     price = Decimal("187.6543")
     md = MagicMock()
     md.get_bars.return_value = [_bar(symbol="AAPL", close=price)]
-    source = ClosedBarQuoteSource(md)
+    source = _quote_source(md)
     paper = PaperBroker(buying_power=Decimal("100000"), quote_source=source)
     paper.connect()
-    settings = Settings(trading_mode="paper", max_position_size_pct=Decimal("0.05"))
+    settings = Settings(
+        trading_mode="paper",
+        max_position_size_pct=Decimal("0.05"),
+        market_data_freshness_enabled=True,
+        default_timeframe="1h",
+        market_data_freshness_bar_periods=2,
+        market_data_freshness_slack_seconds=120,
+        market_data_future_skew_seconds=60,
+    )
     strategy = MagicMock()
     strategy.evaluate.return_value = StrategySignal(
         symbol="AAPL",
@@ -189,6 +243,7 @@ def test_integration_closed_bar_price_becomes_paper_fill_price() -> None:
         risk_manager=BasicRiskManager(settings),
         portfolio=Portfolio(cash=Decimal("100000")),
         executor=BrokerOrderExecutor(paper),
+        clock=lambda: _FIXED_NOW,
     )
 
     result = runtime.run_once(

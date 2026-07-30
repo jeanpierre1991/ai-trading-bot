@@ -26,6 +26,7 @@ def test_runtime_context_defaults() -> None:
     assert context.bar_limit == 100
     assert context.portfolio_value is None
     assert context.daily_pnl_pct is None
+    assert context.enforce_market_data_freshness is None
 
 
 def test_runtime_context_is_immutable() -> None:

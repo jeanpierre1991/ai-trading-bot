@@ -29,13 +29,19 @@ alerts for booking success, booking/mapping failure, and execution REJECTED.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
-from typing import Any
+from typing import Any, Callable
 
 from alerts.notifier import Alert, AlertLevel, AlertNotifier
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from config.settings import Settings
 from core.types import OrderType, Side, SignalAction, Symbol
+from market_data.freshness import (
+    evaluate_last_bar_freshness,
+    resolve_max_age_seconds,
+    utc_now,
+)
 from order_manager.manager import OrderManager, OrderRecord, OrderState
 from portfolio_manager.portfolio import Fill
 from risk_manager.base import RiskManager
@@ -95,6 +101,7 @@ class BasicTradingRuntime(TradingRuntime):
         executor: OrderExecutor | None = None,
         order_manager: OrderManager | None = None,
         alert_notifier: AlertNotifier | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -104,6 +111,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._executor = executor
         self._order_manager = order_manager
         self._alert_notifier = alert_notifier
+        self._clock = clock if clock is not None else utc_now
 
     @property
     def settings(self) -> Settings:
@@ -227,6 +235,28 @@ class BasicTradingRuntime(TradingRuntime):
                 success=False,
                 stage_reached="market_data",
                 aborted_reason="No market bars available",
+                portfolio_snapshot=self._portfolio_snapshot(),
+            )
+
+        freshness_abort = self._freshness_abort_reason(context, bars)
+        if freshness_abort is not None:
+            _log_runtime_event(
+                "market_data_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="market_data",
+                reason=freshness_abort,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="market_data",
+            )
+            return PipelineResult(
+                success=False,
+                stage_reached="market_data",
+                aborted_reason=freshness_abort,
                 portfolio_snapshot=self._portfolio_snapshot(),
             )
 
@@ -573,6 +603,42 @@ class BasicTradingRuntime(TradingRuntime):
             execution=execution,
             portfolio_snapshot=snapshot,
         )
+
+    def _should_enforce_market_data_freshness(self, context: RuntimeContext) -> bool:
+        """Context override wins; otherwise settings.market_data_freshness_enabled."""
+        if context.enforce_market_data_freshness is not None:
+            return context.enforce_market_data_freshness
+        return bool(self._settings.market_data_freshness_enabled)
+
+    def _freshness_abort_reason(
+        self,
+        context: RuntimeContext,
+        bars: list[Any],
+    ) -> str | None:
+        """Return abort reason when freshness fails; None when skipped or fresh."""
+        if not self._should_enforce_market_data_freshness(context):
+            return None
+        settings = self._settings
+        try:
+            max_age = resolve_max_age_seconds(
+                max_age_seconds=settings.market_data_max_age_seconds,
+                timeframe=settings.default_timeframe,
+                bar_periods=settings.market_data_freshness_bar_periods,
+                slack_seconds=settings.market_data_freshness_slack_seconds,
+            )
+        except ValueError as exc:
+            return f"market data freshness config invalid: {exc}"
+        result = evaluate_last_bar_freshness(
+            bars,
+            now_utc=self._clock(),
+            max_age_seconds=max_age,
+            future_skew_seconds=settings.market_data_future_skew_seconds,
+        )
+        if result.ok:
+            return None
+        classification = result.classification
+        detail = result.reason or classification
+        return f"market data freshness failed ({classification}): {detail}"
 
     def _emit_runtime_alert(
         self,

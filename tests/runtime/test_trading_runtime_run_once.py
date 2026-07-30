@@ -58,7 +58,10 @@ def _runtime(
     max_position_size_pct: Decimal = Decimal("0.05"),
     bars: list | None = None,
 ) -> tuple[BasicTradingRuntime, MagicMock, MagicMock, Portfolio]:
-    settings = Settings(max_position_size_pct=max_position_size_pct)
+    settings = Settings(
+        max_position_size_pct=max_position_size_pct,
+        market_data_freshness_enabled=False,
+    )
     portfolio = portfolio or Portfolio(cash=Decimal("100000"))
     market_data = MagicMock()
     market_data.get_bars.return_value = bars if bars is not None else [object()]

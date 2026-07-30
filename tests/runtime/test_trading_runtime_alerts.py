@@ -55,6 +55,7 @@ def _settings(*, alerts_enabled: bool = True) -> Settings:
         max_open_positions=10,
         max_daily_loss_pct=Decimal("0.02"),
         alerts_enabled=alerts_enabled,
+        market_data_freshness_enabled=False,
     )
 
 

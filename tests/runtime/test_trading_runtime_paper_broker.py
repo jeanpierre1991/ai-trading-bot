@@ -54,7 +54,10 @@ def _build_runtime(
     connect: bool = True,
     max_position_size_pct: Decimal = Decimal("0.05"),
 ) -> tuple[BasicTradingRuntime, PaperBroker, _RecordingExecutor, Portfolio]:
-    settings = Settings(max_position_size_pct=max_position_size_pct)
+    settings = Settings(
+        max_position_size_pct=max_position_size_pct,
+        market_data_freshness_enabled=False,
+    )
     portfolio = portfolio or Portfolio(cash=Decimal("100000"))
     paper = broker or PaperBroker(buying_power=Decimal("100000"))
     if connect:
@@ -205,7 +208,10 @@ def test_buy_filled_books_fill_via_paper_broker() -> None:
 
 
 def test_runtime_without_executor_still_works() -> None:
-    settings = Settings(max_position_size_pct=Decimal("0.05"))
+    settings = Settings(
+        max_position_size_pct=Decimal("0.05"),
+        market_data_freshness_enabled=False,
+    )
     portfolio = Portfolio(cash=Decimal("100000"))
     market_data = MagicMock()
     market_data.get_bars.return_value = [object()]
@@ -229,7 +235,10 @@ def test_runtime_without_executor_still_works() -> None:
 
 
 def test_dry_run_executor_still_works_alongside_paper_path() -> None:
-    settings = Settings(max_position_size_pct=Decimal("0.05"))
+    settings = Settings(
+        max_position_size_pct=Decimal("0.05"),
+        market_data_freshness_enabled=False,
+    )
     portfolio = Portfolio(cash=Decimal("100000"))
     market_data = MagicMock()
     market_data.get_bars.return_value = [object()]

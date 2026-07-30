@@ -124,6 +124,8 @@ class BacktestRunner:
                 strategy_name=config.strategy_name,
                 bar_limit=config.bar_limit,
                 daily_pnl_pct=self._session_pnl_pct(initial_capital, portfolio),
+                # M11.2: historical replay must not wall-clock-reject past bars.
+                enforce_market_data_freshness=False,
             )
             result = self._runtime.run_once(context)
             last_result = result
