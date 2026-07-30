@@ -24,3 +24,7 @@ class RuntimeContext:
     enforce_market_data_freshness: bool | None = None
     # M11.3: None → use settings.market_hours_enabled; False for M10 backtests.
     enforce_market_hours: bool | None = None
+    # M12.2 E1: canonical UTC ISO of an already-actioned bar for this symbol.
+    # Compared only to the bar timestamp from this cycle's market-data snapshot.
+    # When equal, side effects (order/execution/booking) are skipped AFTER risk.
+    already_actioned_bar_timestamp: str | None = None

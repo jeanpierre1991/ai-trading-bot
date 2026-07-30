@@ -1,7 +1,7 @@
-"""Bounded paper operator skeleton (Milestone 12.1).
+"""Bounded paper operator with durable resume (Milestones 12.1–12.2).
 
-Composes existing ``TradingRuntime.run_once`` with hard bounds and a kill
-switch. Does not sleep between cycles (M12.3), persist state (M12.2), or
+Composes existing ``TradingRuntime.run_once`` with hard bounds, a kill switch,
+and atomic JSON state persistence. Does not sleep between cycles (M12.3) or
 expose a CLI (M12.3). Leaves ``SessionRunner`` semantics unchanged.
 """
 
@@ -11,15 +11,28 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Callable, Literal
 
 from config.settings import Settings
 from core.exceptions import ConfigurationError
 from core.types import TradingMode
+from order_manager.manager import OrderManager
+from portfolio_manager.portfolio import Portfolio
 from runtime.base import TradingRuntime
 from runtime.context import RuntimeContext
 from runtime.kill_switch import KillSwitch
 from runtime.models import PipelineResult
+from runtime.paper_state import (
+    OPERATOR_STATE_SCHEMA_VERSION,
+    OperatorState,
+    apply_order_manager_snapshot,
+    apply_portfolio_snapshot,
+    normalize_bar_timestamp,
+    order_manager_to_snapshot,
+    portfolio_to_snapshot,
+)
+from runtime.paper_state_store import JsonPaperStateStore, PaperStateStore
 from runtime.session import compute_session_pnl_pct
 
 # Hard ceiling so operator configs cannot become unbounded loops.
@@ -38,10 +51,10 @@ def utc_now() -> datetime:
 
 @dataclass(frozen=True)
 class PaperOperatorConfig:
-    """Hard-bounded inputs for one paper-operator run (M12.1).
+    """Hard-bounded inputs for one paper-operator run.
 
     ``interval_seconds`` is validated now; sleeping is deferred to M12.3.
-    Persistence fields are deferred to M12.2.
+    ``state_path`` enables M12.2 durable load/save when set.
     """
 
     symbol: str
@@ -51,6 +64,7 @@ class PaperOperatorConfig:
     strategy_name: str | None = None
     bar_limit: int = 100
     execution: ExecutionBackend = "dry_run"
+    state_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +80,8 @@ class PaperOperatorResult:
     stop_reason: str | None
     kill_engaged: bool
     bound_reached: str | None
+    cycles_completed_total: int = 0
+    resumed: bool = False
 
     @property
     def completed_all_cycles(self) -> bool:
@@ -82,8 +98,8 @@ class PaperOperator:
     - Kill switch checked before every cycle, including the first.
     - Bounds required: max_cycles, max_wall_time_seconds, interval_seconds.
     - Unattended hours profile (B1): refuse start unless hours enabled + reject.
-    - Abort classification (A2): continue only on ``stage_reached=market_hours``;
-      all other unsuccessful cycles hard-stop.
+    - Abort classification (A2): continue only on ``stage_reached=market_hours``.
+    - M12.2: atomic JSON persistence, D1 equity baseline, E1 actionable-bar cursor.
     """
 
     def __init__(
@@ -93,11 +109,13 @@ class PaperOperator:
         settings: Settings,
         kill_switch: KillSwitch,
         clock: Callable[[], datetime] | None = None,
+        state_store: PaperStateStore | None = None,
     ) -> None:
         self._runtime = runtime
         self._settings = settings
         self._kill_switch = kill_switch
         self._clock = clock if clock is not None else utc_now
+        self._state_store = state_store
 
     @property
     def runtime(self) -> TradingRuntime:
@@ -113,8 +131,28 @@ class PaperOperator:
                 "paper operator kill switch is engaged; refusing to start"
             )
 
+        store = self._resolve_store(config)
         portfolio = self._portfolio()
-        operator_start_equity = self._equity(portfolio)
+        order_manager = self._order_manager()
+
+        resumed = False
+        cycles_completed_total = 0
+        last_actionable_bar_timestamps: dict[str, str] = {}
+        last_cycle_at: datetime | None = None
+
+        if store is not None and store.exists():
+            loaded = store.load()
+            self._restore_runtime_state(portfolio, order_manager, loaded)
+            operator_start_equity = loaded.operator_start_equity
+            cycles_completed_total = loaded.cycles_completed_total
+            last_actionable_bar_timestamps = dict(
+                loaded.last_actionable_bar_timestamps
+            )
+            last_cycle_at = loaded.last_cycle_at
+            resumed = True
+        else:
+            operator_start_equity = self._equity(portfolio)
+
         if operator_start_equity <= 0:
             raise ConfigurationError(
                 "operator_start_equity must be positive; "
@@ -128,11 +166,30 @@ class PaperOperator:
         kill_engaged = False
         bound_reached: str | None = None
 
+        def persist(*, touch_cycle_at: bool) -> None:
+            if store is None:
+                return
+            cycle_at = self._clock() if touch_cycle_at else last_cycle_at
+            store.save(
+                OperatorState(
+                    schema_version=OPERATOR_STATE_SCHEMA_VERSION,
+                    portfolio=portfolio_to_snapshot(portfolio),
+                    order_manager=order_manager_to_snapshot(order_manager),
+                    cycles_completed_total=cycles_completed_total,
+                    operator_start_equity=operator_start_equity,
+                    last_cycle_at=cycle_at,
+                    last_actionable_bar_timestamps=dict(
+                        last_actionable_bar_timestamps
+                    ),
+                )
+            )
+
         for index in range(config.max_cycles):
             if self._kill_switch.is_engaged():
                 stopped_early = True
                 kill_engaged = True
                 stop_reason = "kill_switch_engaged"
+                persist(touch_cycle_at=False)
                 break
 
             elapsed = (self._clock() - started_at).total_seconds()
@@ -142,6 +199,7 @@ class PaperOperator:
                 stop_reason = (
                     f"max_wall_time_seconds reached ({config.max_wall_time_seconds})"
                 )
+                persist(touch_cycle_at=False)
                 break
 
             current_equity = self._equity(portfolio)
@@ -149,21 +207,44 @@ class PaperOperator:
                 operator_start_equity,
                 current_equity,
             )
+            # E1: pass persisted cursor only. The runtime compares it to the
+            # authoritative bar timestamp from this cycle's market-data snapshot.
+            already_actioned = last_actionable_bar_timestamps.get(config.symbol)
+
             context = RuntimeContext(
                 symbol=config.symbol,
                 mode=TradingMode.PAPER,
                 strategy_name=config.strategy_name,
                 bar_limit=config.bar_limit,
                 daily_pnl_pct=daily_pnl_pct,
+                already_actioned_bar_timestamp=already_actioned,
             )
-            result = self._runtime.run_once(context)
+            try:
+                result = self._runtime.run_once(context)
+            except Exception:
+                # Do not persist a potentially inconsistent in-memory mutation.
+                raise
+
             results.append(result)
+            cycles_completed_total += 1
+            last_cycle_at = self._clock()
+
+            # Advance cursor only when this cycle produced actionable side effects
+            # using the authoritative processed bar timestamp from PipelineResult.
+            if (
+                result.intent is not None or result.order is not None
+            ) and result.market_bar_timestamp is not None:
+                last_actionable_bar_timestamps[config.symbol] = (
+                    normalize_bar_timestamp(result.market_bar_timestamp)
+                )
+
+            # Persist after each handled cycle before the next iteration.
+            persist(touch_cycle_at=True)
 
             if result.success:
                 continue
 
             if self._is_continue_on(result):
-                # Decision A2: expected non-actionable market_hours rejection.
                 continue
 
             stopped_early = True
@@ -171,10 +252,9 @@ class PaperOperator:
                 result.aborted_reason
                 or f"cycle {index} aborted at stage {result.stage_reached!r}"
             )
+            # State already saved after this cycle; hard-stop without further cycles.
             break
         else:
-            # Completed configured cycles without early break from kill/wall/hard-stop.
-            # max_cycles itself is a bound; surface it when the loop finishes normally.
             if len(results) >= config.max_cycles:
                 bound_reached = "max_cycles"
 
@@ -188,7 +268,50 @@ class PaperOperator:
             stop_reason=stop_reason,
             kill_engaged=kill_engaged,
             bound_reached=bound_reached,
+            cycles_completed_total=cycles_completed_total,
+            resumed=resumed,
         )
+
+    def _resolve_store(self, config: PaperOperatorConfig) -> PaperStateStore | None:
+        if self._state_store is not None:
+            return self._state_store
+        if config.state_path is None:
+            return None
+        return JsonPaperStateStore(config.state_path)
+
+    def _restore_runtime_state(
+        self,
+        portfolio: Any,
+        order_manager: OrderManager | None,
+        state: OperatorState,
+    ) -> None:
+        if not isinstance(portfolio, Portfolio):
+            raise ConfigurationError(
+                "paper operator resume requires a Portfolio instance on runtime"
+            )
+        try:
+            apply_portfolio_snapshot(portfolio, state.portfolio)
+        except ConfigurationError:
+            raise
+        except Exception as exc:
+            raise ConfigurationError(
+                f"failed to restore portfolio from operator state: {exc}"
+            ) from exc
+
+        if order_manager is None:
+            if state.order_manager.get("orders"):
+                raise ConfigurationError(
+                    "operator state contains orders but runtime has no OrderManager"
+                )
+            return
+        try:
+            apply_order_manager_snapshot(order_manager, state.order_manager)
+        except ConfigurationError:
+            raise
+        except Exception as exc:
+            raise ConfigurationError(
+                f"failed to restore OrderManager from operator state: {exc}"
+            ) from exc
 
     @staticmethod
     def _is_continue_on(result: PipelineResult) -> bool:
@@ -244,6 +367,10 @@ class PaperOperator:
             raise ConfigurationError(
                 f"execution must be 'dry_run' or 'paper'; got {config.execution!r}"
             )
+        if config.state_path is not None and not isinstance(config.state_path, Path):
+            raise ConfigurationError(
+                f"state_path must be a Path or None; got {config.state_path!r}"
+            )
 
     def _validate_unattended_hours_profile(self) -> None:
         """Decision B1: refuse start unless hours enabled + reject."""
@@ -273,6 +400,16 @@ class PaperOperator:
                 "runtime has no portfolio; PaperOperator requires a shared portfolio"
             )
         return portfolio
+
+    def _order_manager(self) -> OrderManager | None:
+        order_manager = getattr(self._runtime, "order_manager", None)
+        if order_manager is None:
+            return None
+        if not isinstance(order_manager, OrderManager):
+            raise ConfigurationError(
+                "runtime.order_manager must be an OrderManager when present"
+            )
+        return order_manager
 
     @staticmethod
     def _equity(portfolio: Any) -> Decimal:

@@ -29,7 +29,7 @@ alerts for booking success, booking/mapping failure, and execution REJECTED.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 from typing import Any, Callable
 
@@ -250,6 +250,9 @@ class BasicTradingRuntime(TradingRuntime):
                 portfolio_snapshot=self._portfolio_snapshot(),
             )
 
+        # Authoritative bar for this cycle's market-data snapshot (E1).
+        processed_bar_ts = self._extract_bar_timestamp(bars[-1])
+
         now_utc = self._clock()
         hours_abort = self._market_hours_abort_reason(context, now_utc=now_utc)
         if hours_abort is not None:
@@ -271,6 +274,7 @@ class BasicTradingRuntime(TradingRuntime):
                 stage_reached="market_hours",
                 aborted_reason=hours_abort,
                 portfolio_snapshot=self._portfolio_snapshot(),
+                market_bar_timestamp=processed_bar_ts,
             )
 
         freshness_abort = self._freshness_abort_reason(context, bars, now_utc=now_utc)
@@ -293,6 +297,7 @@ class BasicTradingRuntime(TradingRuntime):
                 stage_reached="market_data",
                 aborted_reason=freshness_abort,
                 portfolio_snapshot=self._portfolio_snapshot(),
+                market_bar_timestamp=processed_bar_ts,
             )
 
         try:
@@ -320,6 +325,7 @@ class BasicTradingRuntime(TradingRuntime):
                 stage_reached="strategy",
                 aborted_reason=str(exc),
                 portfolio_snapshot=self._portfolio_snapshot(),
+                market_bar_timestamp=processed_bar_ts,
             )
 
         portfolio_value = self._resolve_portfolio_value(context)
@@ -354,6 +360,7 @@ class BasicTradingRuntime(TradingRuntime):
                 risk_evaluation=gate.evaluation,
                 intent=None,
                 portfolio_snapshot=snapshot,
+                market_bar_timestamp=processed_bar_ts,
             )
 
         if not gate.approved:
@@ -378,6 +385,33 @@ class BasicTradingRuntime(TradingRuntime):
                 risk_evaluation=gate.evaluation,
                 intent=None,
                 portfolio_snapshot=snapshot,
+                market_bar_timestamp=processed_bar_ts,
+            )
+
+        # M12.2 E1: after risk, block duplicate side effects for an already-actioned
+        # bar. Uses this cycle's processed bar timestamp (same snapshot as strategy).
+        if self._is_already_actioned_bar(context, processed_bar_ts):
+            _log_runtime_event(
+                "idempotency_skip_side_effects",
+                symbol=context.symbol,
+                stage="portfolio",
+                action=signal.action.value,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=True,
+                stage="portfolio",
+            )
+            return PipelineResult(
+                success=True,
+                stage_reached="portfolio",
+                aborted_reason=None,
+                signal=signal,
+                risk_evaluation=gate.evaluation,
+                intent=None,
+                portfolio_snapshot=snapshot,
+                market_bar_timestamp=processed_bar_ts,
             )
 
         intent, abort_reason = self._try_build_trade_intent(signal, gate.evaluation)
@@ -403,6 +437,7 @@ class BasicTradingRuntime(TradingRuntime):
                 risk_evaluation=gate.evaluation,
                 intent=None,
                 portfolio_snapshot=snapshot,
+                market_bar_timestamp=processed_bar_ts,
             )
 
         order = self._create_order_record(intent)
@@ -429,6 +464,7 @@ class BasicTradingRuntime(TradingRuntime):
                 intent=intent,
                 order=order,
                 portfolio_snapshot=snapshot,
+                market_bar_timestamp=processed_bar_ts,
             )
 
         order = self._mark_order_submitted(order)
@@ -476,6 +512,7 @@ class BasicTradingRuntime(TradingRuntime):
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                     alerts_sent=alerts_sent,
+                    market_bar_timestamp=processed_bar_ts,
                 )
 
             if fill is None:
@@ -514,6 +551,7 @@ class BasicTradingRuntime(TradingRuntime):
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                     alerts_sent=alerts_sent,
+                    market_bar_timestamp=processed_bar_ts,
                 )
 
             try:
@@ -551,6 +589,7 @@ class BasicTradingRuntime(TradingRuntime):
                     execution=execution,
                     portfolio_snapshot=self._portfolio_snapshot(),
                     alerts_sent=alerts_sent,
+                    market_bar_timestamp=processed_bar_ts,
                 )
             snapshot = self._portfolio_snapshot()
             _log_runtime_event(
@@ -584,6 +623,7 @@ class BasicTradingRuntime(TradingRuntime):
                 execution=execution,
                 portfolio_snapshot=snapshot,
                 alerts_sent=alerts_sent,
+                market_bar_timestamp=processed_bar_ts,
             )
 
         if execution.status is ExecutionStatus.REJECTED:
@@ -619,6 +659,7 @@ class BasicTradingRuntime(TradingRuntime):
                 execution=execution,
                 portfolio_snapshot=snapshot,
                 alerts_sent=alerts_sent,
+                market_bar_timestamp=processed_bar_ts,
             )
 
         _log_runtime_event(
@@ -637,7 +678,38 @@ class BasicTradingRuntime(TradingRuntime):
             order=order,
             execution=execution,
             portfolio_snapshot=snapshot,
+            market_bar_timestamp=processed_bar_ts,
         )
+
+    @staticmethod
+    def _extract_bar_timestamp(bar: Any) -> datetime | None:
+        timestamp = getattr(bar, "timestamp", None)
+        if timestamp is None and isinstance(bar, dict):
+            timestamp = bar.get("timestamp")
+        if not isinstance(timestamp, datetime):
+            return None
+        if timestamp.tzinfo is None:
+            return timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc)
+
+    @staticmethod
+    def _canonical_bar_timestamp(value: datetime) -> str:
+        aware = (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
+        )
+        return aware.isoformat().replace("+00:00", "Z")
+
+    def _is_already_actioned_bar(
+        self,
+        context: RuntimeContext,
+        processed_bar_ts: datetime | None,
+    ) -> bool:
+        marker = getattr(context, "already_actioned_bar_timestamp", None)
+        if not marker or processed_bar_ts is None:
+            return False
+        return self._canonical_bar_timestamp(processed_bar_ts) == str(marker)
 
     def _should_enforce_market_data_freshness(self, context: RuntimeContext) -> bool:
         """Context override wins; otherwise settings.market_data_freshness_enabled."""

@@ -87,3 +87,7 @@ class OrderManager:
         record.state = state
         record.updated_at = datetime.now(timezone.utc)
         return record
+
+    def replace_all(self, orders: dict[str, OrderRecord]) -> None:
+        """Replace the in-memory order book (Milestone 12.2 restore)."""
+        self._orders = dict(orders)

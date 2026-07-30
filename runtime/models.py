@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from broker_interface.execution import ExecutionResult
@@ -43,3 +44,6 @@ class PipelineResult:
     execution: ExecutionResult | None = None
     portfolio_snapshot: dict[str, float | int] | None = None
     alerts_sent: int = 0
+    # Authoritative last bar timestamp from the market-data snapshot processed
+    # by this run_once cycle (Milestone 12.2 E1). None when bars were unavailable.
+    market_bar_timestamp: datetime | None = None
