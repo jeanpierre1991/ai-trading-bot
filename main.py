@@ -7,6 +7,7 @@ import argparse
 import logging
 import sys
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from backtesting.bars_io import load_bars_from_csv, make_synthetic_bars
 from backtesting.commission import CommissionDryRunExecutor
@@ -31,7 +32,14 @@ from risk_manager.basic import BasicRiskManager
 from runtime.context import RuntimeContext
 from runtime.dry_run import DryRunExecutor
 from runtime.factory import create_trading_runtime_from_app
+from runtime.kill_switch import FileEnvKillSwitch
 from runtime.models import PipelineResult
+from runtime.paper_operator import (
+    MAX_OPERATOR_CYCLES,
+    PaperOperator,
+    PaperOperatorConfig,
+    PaperOperatorResult,
+)
 from runtime.session import MAX_SESSION_CYCLES, SessionConfig, SessionResult, SessionRunner
 from runtime.trading_runtime import BasicTradingRuntime
 from utilities.logging_setup import setup_logging
@@ -199,6 +207,62 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Bar timeframe for the series (default: settings.default_timeframe)",
     )
 
+    run_paper_operator_parser = subparsers.add_parser(
+        "run-paper-operator",
+        help=(
+            "Run a hard-bounded unattended paper/dry-run operator "
+            "(Milestone 12); requires explicit bounds, --state-path, and --kill-file"
+        ),
+    )
+    _add_execution_flags(run_paper_operator_parser)
+    run_paper_operator_parser.add_argument(
+        "--max-cycles",
+        type=int,
+        required=True,
+        help=f"Hard cycle bound (required; 1..{MAX_OPERATOR_CYCLES})",
+    )
+    run_paper_operator_parser.add_argument(
+        "--max-wall-time-seconds",
+        type=float,
+        required=True,
+        help="Hard wall-time bound in seconds (required; > 0)",
+    )
+    run_paper_operator_parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        required=True,
+        help="Sleep between cycles in seconds (required; > 0)",
+    )
+    run_paper_operator_parser.add_argument(
+        "--state-path",
+        required=True,
+        help="Durable operator state JSON path (required; no unattended default)",
+    )
+    run_paper_operator_parser.add_argument(
+        "--kill-file",
+        required=True,
+        help=(
+            "Kill-switch file path (required). Presence engages the switch; "
+            "PAPER_OPERATOR_KILL env also engages"
+        ),
+    )
+    run_paper_operator_parser.add_argument(
+        "--symbol",
+        default=None,
+        help="Symbol for the operator (default: settings.default_symbol)",
+    )
+    run_paper_operator_parser.add_argument(
+        "--strategy",
+        default=None,
+        help="Strategy name (default: strategy engine default)",
+    )
+    run_paper_operator_parser.add_argument(
+        "--bar-limit",
+        type=int,
+        default=100,
+        help="Number of bars to request per cycle (default: 100)",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -276,6 +340,113 @@ def _print_backtest_result(result: BacktestResult) -> None:
         f"end_date={result.end_date.isoformat()}",
     ]
     print("\n".join(lines))
+
+
+def _print_paper_operator_result(result: PaperOperatorResult) -> None:
+    """Print a minimal PaperOperatorResult summary (no secrets)."""
+    lines = [
+        "=== run-paper-operator result ===",
+        f"cycles_requested={result.cycles_requested}",
+        f"cycles_executed={result.cycles_executed}",
+        f"cycles_completed_total={result.cycles_completed_total}",
+        f"resumed={result.resumed}",
+        f"stopped_early={result.stopped_early}",
+        f"stop_reason={result.stop_reason}",
+        f"kill_engaged={result.kill_engaged}",
+        f"bound_reached={result.bound_reached}",
+        f"completed_all_cycles={result.completed_all_cycles}",
+        f"operator_start_equity={result.operator_start_equity}",
+        f"operator_end_equity={result.operator_end_equity}",
+    ]
+    for index, cycle in enumerate(result.results):
+        lines.append(
+            f"cycle[{index}] success={cycle.success} "
+            f"stage={cycle.stage_reached} aborted_reason={cycle.aborted_reason}"
+        )
+    print("\n".join(lines))
+
+
+def _parse_required_positive_float(raw: object, *, flag: str) -> float:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raise ConfigurationError(f"{flag} must be a positive finite number; got {raw!r}")
+    value = float(raw)
+    if value != value or value in (float("inf"), float("-inf")) or value <= 0:
+        raise ConfigurationError(f"{flag} must be a positive finite number; got {raw!r}")
+    return value
+
+
+def _run_paper_operator_command(settings: Settings, args: argparse.Namespace) -> int:
+    """Startup → factory → PaperOperator → summary (Decision H exit codes)."""
+    if args.bar_limit <= 0:
+        raise ConfigurationError("--bar-limit must be a positive integer")
+
+    if (
+        not isinstance(args.max_cycles, int)
+        or isinstance(args.max_cycles, bool)
+        or args.max_cycles < 1
+        or args.max_cycles > MAX_OPERATOR_CYCLES
+    ):
+        raise ConfigurationError(
+            f"--max-cycles must be an int in 1..{MAX_OPERATOR_CYCLES}; "
+            f"got {args.max_cycles!r}"
+        )
+
+    max_wall = _parse_required_positive_float(
+        args.max_wall_time_seconds, flag="--max-wall-time-seconds"
+    )
+    interval = _parse_required_positive_float(
+        args.interval_seconds, flag="--interval-seconds"
+    )
+
+    state_raw = str(args.state_path).strip()
+    if not state_raw:
+        raise ConfigurationError("--state-path is required and must be non-empty")
+    state_path = Path(state_raw)
+
+    kill_raw = str(args.kill_file).strip()
+    if not kill_raw:
+        raise ConfigurationError("--kill-file is required and must be non-empty")
+    kill_path = Path(kill_raw)
+
+    app = TradingBotApplication(settings)
+    report = app.startup()
+    if not report.success:
+        print(report.summary())
+        app.shutdown()
+        return 1
+
+    exit_code = 0
+    try:
+        execution = _execution_from_args(args)
+        runtime = create_trading_runtime_from_app(app, execution=execution)
+        config = PaperOperatorConfig(
+            symbol=args.symbol or settings.default_symbol,
+            max_cycles=args.max_cycles,
+            max_wall_time_seconds=max_wall,
+            interval_seconds=interval,
+            strategy_name=args.strategy,
+            bar_limit=args.bar_limit,
+            execution=execution,  # type: ignore[arg-type]
+            state_path=state_path,
+        )
+        operator = PaperOperator(
+            runtime,
+            settings=settings,
+            kill_switch=FileEnvKillSwitch(kill_path),
+        )
+        result = operator.run(config)
+        _print_paper_operator_result(result)
+        # Decision H: controlled kill/bound/hard-stop/completion → 0
+        exit_code = 0
+    except ConfigurationError:
+        raise
+    except Exception:
+        logger.exception("Unexpected error during run-paper-operator")
+        exit_code = 2
+    finally:
+        app.shutdown()
+
+    return exit_code
 
 
 def _run_startup(app: TradingBotApplication, *, health_only: bool) -> int:
@@ -540,6 +711,9 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "run-backtest":
             return _run_backtest_command(settings, args)
+
+        if args.command == "run-paper-operator":
+            return _run_paper_operator_command(settings, args)
 
         app = TradingBotApplication(settings)
         return _run_startup(app, health_only=args.health_only)

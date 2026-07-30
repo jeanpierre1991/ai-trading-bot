@@ -1,13 +1,16 @@
-"""Bounded paper operator with durable resume (Milestones 12.1–12.2).
+"""Bounded paper operator with durable resume (Milestones 12.1–12.3).
 
 Composes existing ``TradingRuntime.run_once`` with hard bounds, a kill switch,
-and atomic JSON state persistence. Does not sleep between cycles (M12.3) or
-expose a CLI (M12.3). Leaves ``SessionRunner`` semantics unchanged.
+atomic JSON state persistence, and injectable interval sleeping between cycles.
+CLI wiring lives in ``main.py`` (``run-paper-operator``). Leaves ``SessionRunner``
+semantics unchanged.
 """
 
 from __future__ import annotations
 
+import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -43,6 +46,9 @@ MAX_OPERATOR_CYCLES = 10_000
 _CONTINUE_ON_STAGES = frozenset({"market_hours"})
 
 ExecutionBackend = Literal["dry_run", "paper"]
+Sleeper = Callable[[float], None]
+
+_logger = logging.getLogger("trading_bot.paper_operator")
 
 
 def utc_now() -> datetime:
@@ -53,8 +59,8 @@ def utc_now() -> datetime:
 class PaperOperatorConfig:
     """Hard-bounded inputs for one paper-operator run.
 
-    ``interval_seconds`` is validated now; sleeping is deferred to M12.3.
-    ``state_path`` enables M12.2 durable load/save when set.
+    ``interval_seconds`` is the sleep duration between cycles (M12.3).
+    ``state_path`` enables durable load/save when set (required by CLI).
     """
 
     symbol: str
@@ -110,12 +116,14 @@ class PaperOperator:
         kill_switch: KillSwitch,
         clock: Callable[[], datetime] | None = None,
         state_store: PaperStateStore | None = None,
+        sleeper: Sleeper | None = None,
     ) -> None:
         self._runtime = runtime
         self._settings = settings
         self._kill_switch = kill_switch
         self._clock = clock if clock is not None else utc_now
         self._state_store = state_store
+        self._sleeper: Sleeper = time.sleep if sleeper is None else sleeper
 
     @property
     def runtime(self) -> TradingRuntime:
@@ -241,10 +249,14 @@ class PaperOperator:
             # Persist after each handled cycle before the next iteration.
             persist(touch_cycle_at=True)
 
-            if result.success:
-                continue
-
-            if self._is_continue_on(result):
+            if result.success or self._is_continue_on(result):
+                # M12.3: sleep between cycles when another cycle may still run.
+                if index + 1 < config.max_cycles:
+                    _logger.info(
+                        "interval_sleep seconds=%s",
+                        float(config.interval_seconds),
+                    )
+                    self._sleeper(float(config.interval_seconds))
                 continue
 
             stopped_early = True

@@ -43,6 +43,32 @@ def _bar(*, timestamp: datetime, close: Decimal = Decimal("100")) -> MarketBar:
     )
 
 
+def _paper_operator(
+    runtime: object,
+    *,
+    settings: Settings,
+    kill_switch: object,
+    clock: object | None = None,
+    sleeper: object | None = None,
+) -> PaperOperator:
+    """Build PaperOperator with an injected sleeper (never production time.sleep)."""
+    return PaperOperator(
+        runtime,  # type: ignore[arg-type]
+        settings=settings,
+        kill_switch=kill_switch,  # type: ignore[arg-type]
+        clock=clock,  # type: ignore[arg-type]
+        sleeper=MagicMock() if sleeper is None else sleeper,  # type: ignore[arg-type]
+    )
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_operator_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("real time.sleep invoked in operator tests")
+
+    monkeypatch.setattr("runtime.paper_operator.time.sleep", _boom)
+
+
 def _settings(**overrides: object) -> Settings:
     base: dict[str, object] = {
         "trading_mode": "paper",
@@ -103,7 +129,7 @@ def test_operator_dry_run_runtime_respects_max_cycles(
         session_calendar=UsEquityXnysCalendar(),
     )
 
-    result = PaperOperator(
+    result = _paper_operator(
         runtime,
         settings=settings,
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -154,7 +180,7 @@ def test_operator_continues_on_real_market_hours_reject(
         session_calendar=UsEquityXnysCalendar(),
     )
 
-    result = PaperOperator(
+    result = _paper_operator(
         runtime,
         settings=settings,
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -197,7 +223,7 @@ def test_operator_hard_stops_on_real_freshness_failure(
         session_calendar=UsEquityXnysCalendar(),
     )
 
-    result = PaperOperator(
+    result = _paper_operator(
         runtime,
         settings=settings,
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),

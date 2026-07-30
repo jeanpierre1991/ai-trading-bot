@@ -91,6 +91,34 @@ class _SequenceKillSwitch:
         return self._sequence[idx]
 
 
+def _paper_operator(
+    runtime: object,
+    *,
+    settings: Settings | None = None,
+    kill_switch: object | None = None,
+    clock: object | None = None,
+    sleeper: object | None = None,
+) -> PaperOperator:
+    """Build PaperOperator with an injected sleeper (never production time.sleep)."""
+    return PaperOperator(
+        runtime,  # type: ignore[arg-type]
+        settings=settings or _settings(),
+        kill_switch=kill_switch,  # type: ignore[arg-type]
+        clock=clock,  # type: ignore[arg-type]
+        sleeper=MagicMock() if sleeper is None else sleeper,  # type: ignore[arg-type]
+    )
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_operator_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail closed if any test accidentally uses production time.sleep."""
+
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("real time.sleep invoked in operator tests")
+
+    monkeypatch.setattr("runtime.paper_operator.time.sleep", _boom)
+
+
 def _runtime(
     *,
     bars: list[MarketBar],
@@ -131,7 +159,7 @@ def test_missing_state_first_run_allowed(tmp_path: Path, monkeypatch) -> None:
     bar = _bar(timestamp=_utc(2026, 7, 15, 10, 0))
     state_path = tmp_path / "state.json"
     runtime = _runtime(bars=[bar], now=now)
-    result = PaperOperator(
+    result = _paper_operator(
         runtime,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -156,7 +184,7 @@ def test_operator_start_equity_and_cycles_survive_restart(
 
     portfolio_a = Portfolio(cash=Decimal("100000"))
     runtime_a = _runtime(bars=[bar], now=now, portfolio=portfolio_a)
-    result_a = PaperOperator(
+    result_a = _paper_operator(
         runtime_a,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -169,7 +197,7 @@ def test_operator_start_equity_and_cycles_survive_restart(
     # reset the risk baseline if persistence were ignored.
     portfolio_b = Portfolio(cash=Decimal("50000"))
     runtime_b = _runtime(bars=[bar], now=now, portfolio=portfolio_b)
-    result_b = PaperOperator(
+    result_b = _paper_operator(
         runtime_b,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -201,7 +229,7 @@ def test_e1_no_duplicate_side_effects_after_resume_same_bar(
         portfolio=Portfolio(cash=Decimal("100000")),
     )
     cash_before = runtime_a.portfolio.cash
-    result_a = PaperOperator(
+    result_a = _paper_operator(
         runtime_a,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -223,7 +251,7 @@ def test_e1_no_duplicate_side_effects_after_resume_same_bar(
         portfolio=Portfolio(cash=Decimal("100000")),
         order_manager=OrderManager(),
     )
-    result_b = PaperOperator(
+    result_b = _paper_operator(
         runtime_b,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -256,7 +284,7 @@ def test_corrupt_state_refuses_start_without_empty_portfolio_fallback(
         portfolio=portfolio,
     )
     with pytest.raises(ConfigurationError, match="corrupt"):
-        PaperOperator(
+        _paper_operator(
             runtime,
             settings=_settings(),
             kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -275,7 +303,7 @@ def test_kill_with_persisted_state_stops_and_keeps_baseline(
     runtime = _runtime(bars=[bar], now=now, portfolio=Portfolio(cash=Decimal("100000")))
     # pre-start False, before cycle1 False, before cycle2 True
     kill = _SequenceKillSwitch([False, False, True])
-    result = PaperOperator(
+    result = _paper_operator(
         runtime,
         settings=_settings(),
         kill_switch=kill,
@@ -311,7 +339,7 @@ def test_max_wall_time_with_state_persists(tmp_path: Path, monkeypatch) -> None:
     )
     # Inject same clock into runtime for freshness consistency on first cycle.
     runtime._clock = lambda: start  # noqa: SLF001
-    result = PaperOperator(
+    result = _paper_operator(
         runtime,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -409,7 +437,7 @@ def test_e1_newer_bar_remains_actionable(tmp_path: Path, monkeypatch) -> None:
         action=SignalAction.BUY,
         portfolio=Portfolio(cash=Decimal("100000")),
     )
-    PaperOperator(
+    _paper_operator(
         runtime_a,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -423,7 +451,7 @@ def test_e1_newer_bar_remains_actionable(tmp_path: Path, monkeypatch) -> None:
         portfolio=Portfolio(cash=Decimal("100000")),
         order_manager=OrderManager(),
     )
-    result_b = PaperOperator(
+    result_b = _paper_operator(
         runtime_b,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -449,7 +477,7 @@ def test_e1_hold_does_not_consume_actionable_cursor(
         action=SignalAction.HOLD,
         portfolio=Portfolio(cash=Decimal("100000")),
     )
-    PaperOperator(
+    _paper_operator(
         runtime_hold,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
@@ -464,7 +492,7 @@ def test_e1_hold_does_not_consume_actionable_cursor(
         action=SignalAction.BUY,
         portfolio=Portfolio(cash=Decimal("100000")),
     )
-    result_buy = PaperOperator(
+    result_buy = _paper_operator(
         runtime_buy,
         settings=_settings(),
         kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),

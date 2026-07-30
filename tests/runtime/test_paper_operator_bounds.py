@@ -116,16 +116,29 @@ def _operator(
     kill_switch: object | None = None,
     clock: object | None = None,
     tmp_path: Path | None = None,
+    sleeper: object | None = None,
 ) -> PaperOperator:
     if kill_switch is None:
         assert tmp_path is not None
         kill_switch = FileEnvKillSwitch(tmp_path / "KILL")
+    # Always inject a sleeper in tests — never use production time.sleep.
+    if sleeper is None:
+        sleeper = MagicMock()
     return PaperOperator(
         runtime,  # type: ignore[arg-type]
         settings=settings or _settings(),
         kill_switch=kill_switch,  # type: ignore[arg-type]
         clock=clock,  # type: ignore[arg-type]
+        sleeper=sleeper,  # type: ignore[arg-type]
     )
+
+
+@pytest.fixture(autouse=True)
+def _forbid_real_operator_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("real time.sleep invoked in operator tests")
+
+    monkeypatch.setattr("runtime.paper_operator.time.sleep", _boom)
 
 
 # --- config / bounds validation -------------------------------------------------
@@ -437,15 +450,21 @@ def test_session_runner_still_stops_on_market_hours_abort() -> None:
     assert result.cycles_executed == 1
 
 
-def test_m12_1_does_not_sleep_between_cycles(
+def test_operator_uses_injected_sleeper_not_real_time_sleep(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Interval is validated but M12.1 must not sleep (M12.3 owns sleeping)."""
+    """M12.3 interval uses injectable sleeper; tests must not rely on time.sleep."""
     monkeypatch.delenv("PAPER_OPERATOR_KILL", raising=False)
-    sleep = MagicMock()
-    monkeypatch.setattr("time.sleep", sleep)
+    real_sleep = MagicMock()
+    monkeypatch.setattr("time.sleep", real_sleep)
+    sleeper = MagicMock()
     runtime = _RecordingRuntime(_FakePortfolio(Decimal("100000")))
-    _operator(runtime, tmp_path=tmp_path).run(
-        _config(max_cycles=3, interval_seconds=30.0)
-    )
-    sleep.assert_not_called()
+    PaperOperator(
+        runtime,  # type: ignore[arg-type]
+        settings=_settings(),
+        kill_switch=FileEnvKillSwitch(tmp_path / "KILL"),
+        sleeper=sleeper,
+    ).run(_config(max_cycles=3, interval_seconds=30.0))
+    assert sleeper.call_count == 2
+    sleeper.assert_called_with(30.0)
+    real_sleep.assert_not_called()
