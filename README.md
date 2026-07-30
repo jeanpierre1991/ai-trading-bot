@@ -56,8 +56,17 @@ python main.py
 # Run one decision cycle (dry-run by default; requires TRADING_MODE=paper)
 python main.py run-once --symbol AAPL
 
-# Run a bounded multi-cycle paper/dry-run session
+# Run a bounded multi-cycle paper/dry-run session (supervised; stops on any failed cycle)
 python main.py run-session --cycles 3 --symbol AAPL
+
+# Run a hard-bounded unattended paper/dry-run operator (Milestone 12; requires explicit paths/bounds)
+python main.py run-paper-operator \
+  --max-cycles 10 \
+  --max-wall-time-seconds 3600 \
+  --interval-seconds 60 \
+  --state-path ./operator-state/state.json \
+  --kill-file ./operator-state/KILL \
+  --symbol AAPL
 
 # Run a bounded historical paper backtest (network-free bars source required)
 python main.py run-backtest --synthetic-bars 50 --max-cycles 20 --symbol AAPL
@@ -235,6 +244,54 @@ Operator checklist and M11 closure details: **`MILESTONE_11_SUMMARY.md`**.
 
 Automated proof in CI uses a **mocked** Yahoo ticker factory (see `tests/runtime/test_m11_supervised_paper_path.py`) — no live Yahoo calls in the test suite.
 
+## Unattended paper operator (Milestone 12)
+
+`run-paper-operator` is the **hard-bounded unattended** paper/dry-run path. It is **not** the same as `run-session`:
+
+| | `run-session` | `run-paper-operator` |
+|---|---|---|
+| Use | Supervised tight sessions | Unattended but bounded operator |
+| Abort policy | Stops on **any** `success=False` | Continues only on `market_hours` (A2); hard-stops otherwise |
+| Persistence | In-memory process only | Durable JSON `--state-path` (required) |
+| Kill switch | N/A | Required `--kill-file` (+ optional `PAPER_OPERATOR_KILL=1`) |
+| Bounds | `--cycles` | `--max-cycles`, `--max-wall-time-seconds`, `--interval-seconds` (all required) |
+
+### Required unattended profile
+
+- `TRADING_MODE=paper` (LIVE remains rejected by factory / mode_policy)
+- `MARKET_HOURS_ENABLED=true` and **`MARKET_HOURS_POLICY=reject`** (operator refuses other profiles)
+- Prefer `MARKET_DATA_PROVIDER=mock` for CI/local automation
+- Use `yahoo` only for supervised overnight soaks (manual runbook; not CI)
+- Explicit `--state-path` and `--kill-file` (no unattended defaults in `.env`)
+
+### CLI example
+
+```bash
+python main.py run-paper-operator \
+  --max-cycles 100 \
+  --max-wall-time-seconds 28800 \
+  --interval-seconds 300 \
+  --state-path ./operator-state/state.json \
+  --kill-file ./operator-state/KILL \
+  --symbol AAPL
+# default execution is dry-run; pass --paper only when intentional
+```
+
+Kill engagement: create the kill file **or** set `PAPER_OPERATOR_KILL=1` (truthy: `1`/`true`/`yes`/`on`). Checked before every cycle, including the first.
+
+State path: parent directories are created at start and must be writable; corrupt existing state refuses start (no silent fresh-state fallback).
+
+### Decision H exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Controlled completion / bound / mid-run kill / hard cycle abort |
+| `1` | Refused start / invalid config / corrupt state / FS preflight failure / startup failure |
+| `2` | Unexpected exception |
+| `130` | SIGINT / KeyboardInterrupt |
+
+Checklists (Checkpoint C/D) and soak notes: **`MILESTONE_12_SUMMARY.md`**.
+
 ## Adding a New Module
 
 1. Create a package directory (e.g., `sentiment_engine/`)
@@ -257,13 +314,13 @@ No changes to `main.py` or `core/application.py` are required.
 
 ## Current Milestone
 
-**Milestone 11 (Complete):** Market-data paper fidelity (closed-bar fills, freshness, XNYS hours, supervised Yahoo docs).
+**Milestone 12 (Complete):** Autonomous bounded paper operator (kill switch, durable state, interval CLI, CI soak + runbook).
 
-- M11.1–M11.3: quote-source paper pricing, freshness gate, session-aware hours
-- M11.4: Checkpoint A checklist + mocked Yahoo E2E tests; CI remains on `mock`
-- LIVE still rejected by factory / mode_policy
+- M12.1–M12.3: kill/bounds, atomic resume, `run-paper-operator` CLI + Decision H exits
+- M12.4: CI mock soak, state-path writability preflight, Checkpoint C/D docs (`MILESTONE_12_SUMMARY.md`)
+- LIVE still rejected by factory / mode_policy; `SessionRunner` supervised semantics unchanged
 
-Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8), bounded `run-session` (M9), historical `run-backtest` (M10). Details: `MILESTONE_7_SUMMARY.md` … `MILESTONE_11_SUMMARY.md`.
+Earlier foundations: modular startup (M1), runtime pipeline and paper booking (M5–M7), operational hardening and `run-once` (M8), bounded `run-session` (M9), historical `run-backtest` (M10), market-data paper fidelity (M11). Details: `MILESTONE_7_SUMMARY.md` … `MILESTONE_12_SUMMARY.md`.
 
 ## License
 

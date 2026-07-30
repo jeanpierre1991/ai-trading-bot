@@ -18,6 +18,9 @@ class PaperStateStore(Protocol):
     def exists(self) -> bool:
         """Return True when a state file is present at the configured path."""
 
+    def ensure_parent_writable(self) -> None:
+        """Create parent dirs and verify writability. Fail closed on OSError."""
+
     def load(self) -> OperatorState:
         """Load and validate state. Raises ConfigurationError on failure."""
 
@@ -37,6 +40,42 @@ class JsonPaperStateStore:
 
     def exists(self) -> bool:
         return self._path.is_file()
+
+    def ensure_parent_writable(self) -> None:
+        """Create the state parent directory and prove it is writable (M12.4 S1b).
+
+        Called at operator start before any ``run_once`` so unattended runs fail
+        closed early. Does not create, repair, or truncate the state file itself.
+        """
+        parent = self._path.parent
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ConfigurationError(
+                f"failed to create state directory {parent}: {exc}"
+            ) from exc
+
+        probe_path: Path | None = None
+        try:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{self._path.name}.writecheck.",
+                suffix=".tmp",
+                dir=str(parent),
+            )
+            probe_path = Path(tmp_name)
+            os.close(fd)
+            probe_path.unlink(missing_ok=True)
+            probe_path = None
+        except OSError as exc:
+            raise ConfigurationError(
+                f"operator state directory is not writable: {parent}: {exc}"
+            ) from exc
+        finally:
+            if probe_path is not None:
+                try:
+                    probe_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def load(self) -> OperatorState:
         if not self.exists():

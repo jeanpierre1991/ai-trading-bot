@@ -309,6 +309,53 @@ def test_run_paper_operator_corrupt_state_exits_1_without_fresh_fallback(
     app.shutdown.assert_called_once()
 
 
+def test_run_paper_operator_state_fs_preflight_failure_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M12.4 S1b: unwritable state parent → CLI exit 1; no run_once."""
+    from core.exceptions import ConfigurationError
+    from order_manager.manager import OrderManager
+    from portfolio_manager.portfolio import Portfolio
+    from runtime.paper_state_store import JsonPaperStateStore
+
+    settings = _settings()
+    monkeypatch.setattr(main_module, "load_settings", lambda _path: settings)
+    monkeypatch.setattr(main_module, "setup_logging", lambda _s: None)
+    app = MagicMock()
+    app.startup.return_value = SimpleNamespace(success=True, summary=lambda: "OK")
+    monkeypatch.setattr(main_module, "TradingBotApplication", lambda _s: app)
+
+    portfolio = Portfolio(cash=Decimal("100000"))
+
+    class _RT:
+        def __init__(self) -> None:
+            self.portfolio = portfolio
+            self.order_manager = OrderManager()
+            self.run_once_calls = 0
+
+        def run_once(self, _context: Any) -> PipelineResult:
+            self.run_once_calls += 1
+            return PipelineResult(success=True, stage_reached="portfolio")
+
+    runtime = _RT()
+    monkeypatch.setattr(
+        main_module, "create_trading_runtime_from_app", lambda *_a, **_k: runtime
+    )
+    monkeypatch.setattr(main_module, "PaperOperator", PaperOperator)
+
+    def _refuse(self: Any) -> None:
+        raise ConfigurationError(
+            "operator state directory is not writable: simulated"
+        )
+
+    monkeypatch.setattr(JsonPaperStateStore, "ensure_parent_writable", _refuse)
+
+    assert main_module.main(_base_argv(tmp_path)) == 1
+    assert runtime.run_once_calls == 0
+    assert portfolio.cash == Decimal("100000")
+    app.shutdown.assert_called_once()
+
+
 def test_run_paper_operator_hours_allow_refuses_start_exit_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

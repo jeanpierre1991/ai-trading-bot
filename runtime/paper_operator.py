@@ -1,9 +1,9 @@
-"""Bounded paper operator with durable resume (Milestones 12.1–12.3).
+"""Bounded paper operator with durable resume (Milestones 12.1–12.4).
 
 Composes existing ``TradingRuntime.run_once`` with hard bounds, a kill switch,
-atomic JSON state persistence, and injectable interval sleeping between cycles.
-CLI wiring lives in ``main.py`` (``run-paper-operator``). Leaves ``SessionRunner``
-semantics unchanged.
+atomic JSON state persistence, injectable interval sleeping, and start-time
+state-path writability preflight (M12.4 S1b). CLI wiring lives in ``main.py``
+(``run-paper-operator``). Leaves ``SessionRunner`` semantics unchanged.
 """
 
 from __future__ import annotations
@@ -140,6 +140,10 @@ class PaperOperator:
             )
 
         store = self._resolve_store(config)
+        # M12.4 S1(b): fail closed on state-path FS issues before any run_once.
+        if store is not None:
+            store.ensure_parent_writable()
+
         portfolio = self._portfolio()
         order_manager = self._order_manager()
 
