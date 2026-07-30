@@ -20,7 +20,9 @@ from runtime.factory import create_trading_runtime
 from runtime.session import SessionConfig, SessionRunner
 from runtime.trading_runtime import BasicTradingRuntime
 from strategy_engine.signal import StrategySignal
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+from market_data.calendars.us_equity_xnys import UsEquityXnysCalendar
 
 
 def _signal(
@@ -39,12 +41,23 @@ def _signal(
 
 
 def _mock_market_data(*, close: Decimal = Decimal("100")) -> MagicMock:
-    """Bars expose a closed price so M11.1 ClosedBarQuoteSource can fill paper orders."""
+    """Bars expose a closed price so M11.1 ClosedBarQuoteSource can fill paper orders.
+
+    Timestamp is session-aware: wall-now during RTH, otherwise near last regular close
+    so M11.3 freshness does not treat a weekend ``now`` stamp as a future anomaly.
+    """
     market_data = MagicMock()
-    now = datetime.now(timezone.utc)
+    wall = datetime.now(timezone.utc)
+    snapshot = UsEquityXnysCalendar().resolve(wall)
+    if snapshot.is_rth_open:
+        stamp = wall
+    elif snapshot.last_completed_regular_close_utc is not None:
+        stamp = snapshot.last_completed_regular_close_utc - timedelta(minutes=30)
+    else:
+        stamp = datetime(2026, 7, 15, 15, 0, tzinfo=timezone.utc)
     market_data.get_bars.return_value = [
         MarketBar(
-            timestamp=now,
+            timestamp=stamp,
             open=close,
             high=close + Decimal("1"),
             low=close - Decimal("1"),

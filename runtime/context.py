@@ -22,3 +22,5 @@ class RuntimeContext:
     daily_pnl_pct: Decimal | None = None
     # M11.2: None → use settings.market_data_freshness_enabled; False for M10 backtests.
     enforce_market_data_freshness: bool | None = None
+    # M11.3: None → use settings.market_hours_enabled; False for M10 backtests.
+    enforce_market_hours: bool | None = None

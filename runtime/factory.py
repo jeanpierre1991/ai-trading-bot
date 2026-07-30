@@ -14,6 +14,7 @@ from broker_interface.quotes import ClosedBarQuoteSource
 from config.settings import Settings
 from core.exceptions import ConfigurationError
 from core.module_registry import ModuleRegistry
+from market_data.calendars.us_equity_xnys import build_session_calendar
 from order_manager.manager import OrderManager
 from risk_manager.base import RiskManager
 from risk_manager.basic import BasicRiskManager
@@ -76,13 +77,6 @@ def create_trading_runtime(
     resolved_risk = (
         risk_manager if risk_manager is not None else BasicRiskManager(settings)
     )
-    resolved_executor = _build_executor(
-        execution=execution,
-        settings=settings,
-        registry=registry,
-        broker=broker,
-        market_data=resolved_market_data,
-    )
     resolved_order_manager = _resolve_order_manager(
         with_order_manager=with_order_manager,
         order_manager=order_manager,
@@ -90,6 +84,22 @@ def create_trading_runtime(
     resolved_alert_notifier = _resolve_alert_notifier(
         with_alerts=with_alerts,
         alert_notifier=alert_notifier,
+    )
+    try:
+        session_calendar = build_session_calendar(
+            settings.market_hours_calendar,
+            tz_name=settings.market_hours_timezone,
+        )
+    except ValueError as exc:
+        raise ConfigurationError(str(exc)) from exc
+
+    resolved_executor = _build_executor(
+        execution=execution,
+        settings=settings,
+        registry=registry,
+        broker=broker,
+        market_data=resolved_market_data,
+        session_calendar=session_calendar,
     )
 
     return BasicTradingRuntime(
@@ -101,6 +111,7 @@ def create_trading_runtime(
         executor=resolved_executor,
         order_manager=resolved_order_manager,
         alert_notifier=resolved_alert_notifier,
+        session_calendar=session_calendar,
     )
 
 
@@ -211,6 +222,7 @@ def _build_executor(
     registry: ModuleRegistry | None,
     broker: PaperBroker | None,
     market_data: Any,
+    session_calendar: Any,
 ) -> DryRunExecutor | BrokerOrderExecutor:
     if execution == "dry_run":
         return DryRunExecutor()
@@ -220,6 +232,7 @@ def _build_executor(
         registry=registry,
         broker=broker,
         market_data=market_data,
+        session_calendar=session_calendar,
     )
     return BrokerOrderExecutor(paper_broker)
 
@@ -230,6 +243,7 @@ def _resolve_paper_broker(
     registry: ModuleRegistry | None,
     broker: PaperBroker | None,
     market_data: Any,
+    session_calendar: Any,
 ) -> PaperBroker:
     quote_source = ClosedBarQuoteSource(
         market_data,
@@ -239,6 +253,9 @@ def _resolve_paper_broker(
         bar_periods=settings.market_data_freshness_bar_periods,
         slack_seconds=settings.market_data_freshness_slack_seconds,
         future_skew_seconds=settings.market_data_future_skew_seconds,
+        session_calendar=session_calendar,
+        market_hours_enabled=settings.market_hours_enabled,
+        market_hours_policy=settings.market_hours_policy,
     )
 
     if broker is not None:

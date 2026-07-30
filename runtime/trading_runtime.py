@@ -42,6 +42,12 @@ from market_data.freshness import (
     resolve_max_age_seconds,
     utc_now,
 )
+from market_data.session_calendar import (
+    MarketHoursPolicy,
+    SessionCalendar,
+    freshness_reference_now,
+    is_trading_permitted,
+)
 from order_manager.manager import OrderManager, OrderRecord, OrderState
 from portfolio_manager.portfolio import Fill
 from risk_manager.base import RiskManager
@@ -102,6 +108,7 @@ class BasicTradingRuntime(TradingRuntime):
         order_manager: OrderManager | None = None,
         alert_notifier: AlertNotifier | None = None,
         clock: Callable[[], datetime] | None = None,
+        session_calendar: SessionCalendar | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -112,6 +119,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._order_manager = order_manager
         self._alert_notifier = alert_notifier
         self._clock = clock if clock is not None else utc_now
+        self._session_calendar = session_calendar
 
     @property
     def settings(self) -> Settings:
@@ -144,6 +152,10 @@ class BasicTradingRuntime(TradingRuntime):
     @property
     def alert_notifier(self) -> AlertNotifier | None:
         return self._alert_notifier
+
+    @property
+    def session_calendar(self) -> SessionCalendar | None:
+        return self._session_calendar
 
     def run_once(self, context: RuntimeContext) -> PipelineResult:
         """Run one coordinated cycle and return a PipelineResult.
@@ -238,7 +250,30 @@ class BasicTradingRuntime(TradingRuntime):
                 portfolio_snapshot=self._portfolio_snapshot(),
             )
 
-        freshness_abort = self._freshness_abort_reason(context, bars)
+        now_utc = self._clock()
+        hours_abort = self._market_hours_abort_reason(context, now_utc=now_utc)
+        if hours_abort is not None:
+            _log_runtime_event(
+                "market_hours_abort",
+                level=logging.WARNING,
+                symbol=context.symbol,
+                stage="market_hours",
+                reason=hours_abort,
+            )
+            _log_runtime_event(
+                "cycle_end",
+                symbol=context.symbol,
+                success=False,
+                stage="market_hours",
+            )
+            return PipelineResult(
+                success=False,
+                stage_reached="market_hours",
+                aborted_reason=hours_abort,
+                portfolio_snapshot=self._portfolio_snapshot(),
+            )
+
+        freshness_abort = self._freshness_abort_reason(context, bars, now_utc=now_utc)
         if freshness_abort is not None:
             _log_runtime_event(
                 "market_data_abort",
@@ -610,15 +645,54 @@ class BasicTradingRuntime(TradingRuntime):
             return context.enforce_market_data_freshness
         return bool(self._settings.market_data_freshness_enabled)
 
+    def _should_enforce_market_hours(self, context: RuntimeContext) -> bool:
+        """Context override wins; otherwise settings.market_hours_enabled."""
+        if context.enforce_market_hours is not None:
+            return context.enforce_market_hours
+        return bool(self._settings.market_hours_enabled)
+
+    def _market_hours_abort_reason(
+        self,
+        context: RuntimeContext,
+        *,
+        now_utc: datetime,
+    ) -> str | None:
+        """Abort when hours policy rejects outside RTH (Decision D)."""
+        if not self._should_enforce_market_hours(context):
+            return None
+        policy_raw = str(self._settings.market_hours_policy).strip().lower()
+        try:
+            policy = MarketHoursPolicy(policy_raw)
+        except ValueError:
+            return f"market hours policy invalid: {policy_raw!r}"
+        if policy is MarketHoursPolicy.ALLOW:
+            return None
+        if self._session_calendar is None:
+            return "market hours enforcement requires a session calendar"
+        snapshot = self._session_calendar.resolve(now_utc)
+        if snapshot.state.value == "calendar_unavailable":
+            detail = snapshot.reason or "calendar unavailable"
+            return f"market hours failed (calendar_unavailable): {detail}"
+        if is_trading_permitted(snapshot, policy):
+            return None
+        detail = snapshot.reason or snapshot.state.value
+        return (
+            f"market hours rejected (policy=reject, state={snapshot.state.value}): "
+            f"{detail}"
+        )
+
     def _freshness_abort_reason(
         self,
         context: RuntimeContext,
         bars: list[Any],
+        *,
+        now_utc: datetime | None = None,
     ) -> str | None:
         """Return abort reason when freshness fails; None when skipped or fresh."""
         if not self._should_enforce_market_data_freshness(context):
             return None
         settings = self._settings
+        wall_now = now_utc if now_utc is not None else self._clock()
         try:
             max_age = resolve_max_age_seconds(
                 max_age_seconds=settings.market_data_max_age_seconds,
@@ -628,9 +702,18 @@ class BasicTradingRuntime(TradingRuntime):
             )
         except ValueError as exc:
             return f"market data freshness config invalid: {exc}"
+
+        reference_now = wall_now
+        if self._session_calendar is not None:
+            snapshot = self._session_calendar.resolve(wall_now)
+            try:
+                reference_now = freshness_reference_now(snapshot, wall_now)
+            except ValueError as exc:
+                return f"market data freshness failed (calendar): {exc}"
+
         result = evaluate_last_bar_freshness(
             bars,
-            now_utc=self._clock(),
+            now_utc=reference_now,
             max_age_seconds=max_age,
             future_skew_seconds=settings.market_data_future_skew_seconds,
         )

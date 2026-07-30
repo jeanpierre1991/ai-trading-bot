@@ -126,6 +126,8 @@ class BacktestRunner:
                 daily_pnl_pct=self._session_pnl_pct(initial_capital, portfolio),
                 # M11.2: historical replay must not wall-clock-reject past bars.
                 enforce_market_data_freshness=False,
+                # M11.3: historical replay must not consult live session hours.
+                enforce_market_hours=False,
             )
             result = self._runtime.run_once(context)
             last_result = result

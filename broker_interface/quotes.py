@@ -1,8 +1,8 @@
-"""Market-data-derived quote abstractions for paper fills (Milestone 11.1 / 11.2).
+"""Market-data-derived quote abstractions for paper fills (Milestone 11.1–11.3).
 
 ``PaperBroker`` never contacts the network. When a ``QuoteSource`` is injected,
 fill prices come exclusively from that abstraction (latest closed bar close).
-M11.2 optionally validates last-bar freshness with the shared freshness helpers.
+M11.2/M11.3 optionally validate last-bar freshness (session-aware) and hours policy.
 """
 
 from __future__ import annotations
@@ -16,6 +16,12 @@ from market_data.freshness import (
     evaluate_bar_freshness,
     resolve_max_age_seconds,
     utc_now,
+)
+from market_data.session_calendar import (
+    MarketHoursPolicy,
+    SessionCalendar,
+    freshness_reference_now,
+    is_trading_permitted,
 )
 
 _PRICE = Decimal("0.0001")
@@ -58,6 +64,9 @@ class ClosedBarQuoteSource:
         slack_seconds: int = 120,
         future_skew_seconds: int = 60,
         clock: Callable[[], datetime] | None = None,
+        session_calendar: SessionCalendar | None = None,
+        market_hours_enabled: bool = True,
+        market_hours_policy: str = "allow",
     ) -> None:
         if market_data is None:
             raise QuoteUnavailableError("market_data is required for ClosedBarQuoteSource")
@@ -74,6 +83,9 @@ class ClosedBarQuoteSource:
         self._slack_seconds = slack_seconds
         self._future_skew_seconds = future_skew_seconds
         self._clock = clock if clock is not None else utc_now
+        self._session_calendar = session_calendar
+        self._market_hours_enabled = market_hours_enabled
+        self._market_hours_policy = str(market_hours_policy).strip().lower()
 
     @property
     def market_data(self) -> Any:
@@ -112,6 +124,27 @@ class ClosedBarQuoteSource:
                 f"{resolved!r}"
             )
 
+        wall_now = self._clock()
+        if self._market_hours_enabled:
+            try:
+                policy = MarketHoursPolicy(self._market_hours_policy)
+            except ValueError as exc:
+                raise QuoteUnavailableError(
+                    f"market hours policy invalid: {self._market_hours_policy!r}"
+                ) from exc
+            if policy is MarketHoursPolicy.REJECT:
+                if self._session_calendar is None:
+                    raise QuoteUnavailableError(
+                        "market hours reject policy requires a session calendar"
+                    )
+                snapshot = self._session_calendar.resolve(wall_now)
+                if not is_trading_permitted(snapshot, policy):
+                    detail = snapshot.reason or snapshot.state.value
+                    raise QuoteUnavailableError(
+                        f"market hours rejected for symbol {resolved!r} "
+                        f"(state={snapshot.state.value}): {detail}"
+                    )
+
         if self._freshness_enabled:
             try:
                 max_age = resolve_max_age_seconds(
@@ -122,9 +155,20 @@ class ClosedBarQuoteSource:
                 )
             except ValueError as exc:
                 raise QuoteUnavailableError(f"freshness config invalid: {exc}") from exc
+
+            reference_now = wall_now
+            if self._session_calendar is not None:
+                snapshot = self._session_calendar.resolve(wall_now)
+                try:
+                    reference_now = freshness_reference_now(snapshot, wall_now)
+                except ValueError as exc:
+                    raise QuoteUnavailableError(
+                        f"freshness calendar reference failed: {exc}"
+                    ) from exc
+
             freshness = evaluate_bar_freshness(
                 bar,
-                now_utc=self._clock(),
+                now_utc=reference_now,
                 max_age_seconds=max_age,
                 future_skew_seconds=self._future_skew_seconds,
             )

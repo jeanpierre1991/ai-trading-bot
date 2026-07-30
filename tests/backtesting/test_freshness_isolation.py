@@ -85,6 +85,7 @@ def test_backtest_runner_sets_enforce_market_data_freshness_false() -> None:
     assert result.cycles_executed == 2
     assert seen
     assert all(ctx.enforce_market_data_freshness is False for ctx in seen)
+    assert all(ctx.enforce_market_hours is False for ctx in seen)
     assert all(ctx.mode is TradingMode.PAPER for ctx in seen)
 
 

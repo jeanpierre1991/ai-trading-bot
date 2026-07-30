@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     market_data_freshness_bar_periods: int = 2
     market_data_freshness_slack_seconds: int = 120
     market_data_future_skew_seconds: int = 60
+    # M11.3 market hours / session awareness (US equity XNYS)
+    market_hours_enabled: bool = True
+    market_hours_policy: Literal["allow", "reject"] = "allow"
+    market_hours_calendar: str = "xnys"
+    market_hours_timezone: str = "America/New_York"
 
     # AI engine
     ai_provider: str = "mock"
