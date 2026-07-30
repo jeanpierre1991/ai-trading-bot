@@ -11,7 +11,7 @@ from broker_interface.broker import PaperBroker
 from broker_interface.execution import ExecutionStatus
 from config.settings import Settings
 from core.exceptions import ConfigurationError
-from core.types import SignalAction
+from core.types import MarketBar, SignalAction
 from order_manager.manager import OrderManager, OrderState
 from portfolio_manager.portfolio import Portfolio
 from runtime.broker_executor import BrokerOrderExecutor
@@ -20,6 +20,7 @@ from runtime.factory import create_trading_runtime
 from runtime.session import SessionConfig, SessionRunner
 from runtime.trading_runtime import BasicTradingRuntime
 from strategy_engine.signal import StrategySignal
+from datetime import datetime, timezone
 
 
 def _signal(
@@ -37,9 +38,21 @@ def _signal(
     )
 
 
-def _mock_market_data() -> MagicMock:
+def _mock_market_data(*, close: Decimal = Decimal("100")) -> MagicMock:
+    """Bars expose a closed price so M11.1 ClosedBarQuoteSource can fill paper orders."""
     market_data = MagicMock()
-    market_data.get_bars.return_value = [object()]
+    market_data.get_bars.return_value = [
+        MarketBar(
+            timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            open=close,
+            high=close + Decimal("1"),
+            low=close - Decimal("1"),
+            close=close,
+            volume=Decimal("1000"),
+            symbol="AAPL",
+            timeframe="1h",
+        )
+    ]
     return market_data
 
 

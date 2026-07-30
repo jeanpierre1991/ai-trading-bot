@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from alerts.notifier import AlertNotifier, ConsoleNotifier
 from broker_interface.broker import PaperBroker
+from broker_interface.quotes import ClosedBarQuoteSource
 from config.settings import Settings
 from core.exceptions import ConfigurationError
 from core.module_registry import ModuleRegistry
@@ -80,6 +81,7 @@ def create_trading_runtime(
         settings=settings,
         registry=registry,
         broker=broker,
+        market_data=resolved_market_data,
     )
     resolved_order_manager = _resolve_order_manager(
         with_order_manager=with_order_manager,
@@ -208,6 +210,7 @@ def _build_executor(
     settings: Settings,
     registry: ModuleRegistry | None,
     broker: PaperBroker | None,
+    market_data: Any,
 ) -> DryRunExecutor | BrokerOrderExecutor:
     if execution == "dry_run":
         return DryRunExecutor()
@@ -216,6 +219,7 @@ def _build_executor(
         settings=settings,
         registry=registry,
         broker=broker,
+        market_data=market_data,
     )
     return BrokerOrderExecutor(paper_broker)
 
@@ -225,13 +229,19 @@ def _resolve_paper_broker(
     settings: Settings,
     registry: ModuleRegistry | None,
     broker: PaperBroker | None,
+    market_data: Any,
 ) -> PaperBroker:
+    quote_source = ClosedBarQuoteSource(market_data)
+
     if broker is not None:
         if not isinstance(broker, PaperBroker):
             raise ConfigurationError(
                 f"broker must be a PaperBroker for execution='paper'; "
                 f"got {type(broker).__name__}"
             )
+        # M11.1: wire closed-bar quote source when not already configured.
+        if broker.quote_source is None:
+            broker.set_quote_source(quote_source)
         return broker
 
     if registry is not None:
@@ -247,11 +257,14 @@ def _resolve_paper_broker(
                         f"broker_interface broker {type(candidate).__name__} "
                         "is not a PaperBroker; live brokers are not allowed"
                     )
+                if candidate.quote_source is None:
+                    candidate.set_quote_source(quote_source)
                 return candidate
 
     paper = PaperBroker(
         name=settings.broker_name or "paper",
         buying_power=settings.backtest_initial_capital,
+        quote_source=quote_source,
     )
     paper.connect()
     return paper

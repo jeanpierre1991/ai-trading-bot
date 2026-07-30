@@ -10,10 +10,19 @@ from decimal import Decimal
 
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from broker_interface.orders import BrokerOrderRequest
+from broker_interface.quotes import QuoteSource, QuoteUnavailableError
 from core.types import OrderId, OrderType, Side, Symbol
 
 _MONEY = Decimal("0.01")
 _PRICE = Decimal("0.0001")
+
+_LEGACY_QUOTES: dict[str, Decimal] = {
+    "AAPL": Decimal("190.25"),
+    "MSFT": Decimal("420.50"),
+    "GOOGL": Decimal("175.10"),
+    "SPY": Decimal("520.75"),
+}
+_LEGACY_DEFAULT_QUOTE = Decimal("100.00")
 
 
 @dataclass(frozen=True)
@@ -49,13 +58,36 @@ class Broker(ABC):
 
 
 class PaperBroker(Broker):
-    """Simulated broker for paper trading (local only, no network)."""
+    """Simulated broker for paper trading (local only, no network).
 
-    def __init__(self, name: str = "paper", buying_power: Decimal = Decimal("100000")) -> None:
+    When ``quote_source`` is injected (M11.1), MARKET fills use that source's
+    closed-bar price exclusively. Missing/invalid quotes reject the order —
+    there is no silent fallback to the legacy static map.
+
+    When ``quote_source`` is omitted, legacy static quotes are used for
+    backward compatibility with existing unit tests.
+    """
+
+    def __init__(
+        self,
+        name: str = "paper",
+        buying_power: Decimal = Decimal("100000"),
+        *,
+        quote_source: QuoteSource | None = None,
+    ) -> None:
         self._name = name
         self._buying_power = buying_power
         self._connected = False
         self._account_id = "PAPER-001"
+        self._quote_source = quote_source
+
+    @property
+    def quote_source(self) -> QuoteSource | None:
+        return self._quote_source
+
+    def set_quote_source(self, quote_source: QuoteSource | None) -> None:
+        """Attach or clear the M11.1 quote source (factory wiring)."""
+        self._quote_source = quote_source
 
     def connect(self) -> bool:
         self._connected = True
@@ -74,13 +106,15 @@ class PaperBroker(Broker):
         )
 
     def get_quote(self, symbol: Symbol) -> Decimal:
-        quotes = {
-            "AAPL": Decimal("190.25"),
-            "MSFT": Decimal("420.50"),
-            "GOOGL": Decimal("175.10"),
-            "SPY": Decimal("520.75"),
-        }
-        return quotes.get(str(symbol), Decimal("100.00"))
+        """Return the price used for paper MARKET fills.
+
+        With a quote source: closed-bar price only (raises
+        ``QuoteUnavailableError`` if unavailable/invalid).
+        Without a quote source: legacy static map (backward compatible).
+        """
+        if self._quote_source is not None:
+            return self._quote_source.get_closed_bar_price(symbol)
+        return _LEGACY_QUOTES.get(str(symbol).strip(), _LEGACY_DEFAULT_QUOTE)
 
     def place_order(self, request: BrokerOrderRequest) -> ExecutionResult:
         """Fill MARKET orders locally using ``get_quote`` as the execution price.
@@ -134,7 +168,24 @@ class PaperBroker(Broker):
                 ),
             )
 
-        fill_price = self.get_quote(Symbol(symbol_text)).quantize(_PRICE)
+        try:
+            fill_price = self.get_quote(Symbol(symbol_text)).quantize(_PRICE)
+        except QuoteUnavailableError as exc:
+            return self._reject(
+                symbol=Symbol(symbol_text),
+                side=side,
+                quantity=quantity,
+                message=f"Paper quote unavailable: {exc}",
+            )
+
+        if not fill_price.is_finite() or fill_price <= 0:
+            return self._reject(
+                symbol=Symbol(symbol_text),
+                side=side,
+                quantity=quantity,
+                message=f"Paper quote unavailable: invalid fill price {fill_price}",
+            )
+
         notional = (quantity * fill_price).quantize(_MONEY)
 
         if side is Side.BUY and notional > self._buying_power:
