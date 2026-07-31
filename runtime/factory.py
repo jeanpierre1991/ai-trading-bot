@@ -26,8 +26,10 @@ from risk_manager.base import RiskManager
 from risk_manager.basic import BasicRiskManager
 from runtime.broker_executor import BrokerOrderExecutor
 from runtime.dry_run import DryRunExecutor
+from runtime.idempotent_submit import IdempotentLiveExecutor, require_live_ledger_path
 from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter
 from runtime.live_enablement import LiveExecutionContext, evaluate_live_enablement
+from runtime.live_order_ledger import JsonLiveOrderLedger
 from runtime.trading_runtime import BasicTradingRuntime
 
 ExecutionBackend = Literal["dry_run", "paper", "live"]
@@ -103,6 +105,12 @@ def create_trading_runtime(
     except ValueError as exc:
         raise ConfigurationError(str(exc)) from exc
 
+    live_ledger: JsonLiveOrderLedger | None = None
+    if execution == "live":
+        ledger_path = require_live_ledger_path(settings.live_order_ledger_path)
+        live_ledger = JsonLiveOrderLedger(ledger_path)
+        live_ledger.ensure_ready()
+
     resolved_executor = _build_executor(
         execution=execution,
         settings=settings,
@@ -111,6 +119,7 @@ def create_trading_runtime(
         market_data=resolved_market_data,
         session_calendar=session_calendar,
         http_transport=http_transport,
+        live_ledger=live_ledger,
     )
 
     return BasicTradingRuntime(
@@ -125,6 +134,7 @@ def create_trading_runtime(
         session_calendar=session_calendar,
         execution=execution,
         command=command if execution == "live" else (live_command or "run-once"),
+        live_ledger=live_ledger,
     )
 
 
@@ -267,15 +277,21 @@ def _build_executor(
     market_data: Any,
     session_calendar: Any,
     http_transport: Any | None,
+    live_ledger: JsonLiveOrderLedger | None = None,
 ) -> DryRunExecutor | BrokerOrderExecutor:
     if execution == "dry_run":
         return DryRunExecutor()
 
     if execution == "live":
+        if live_ledger is None:
+            raise ConfigurationError(
+                "execution='live' requires an initialized live order ledger"
+            )
         return _build_live_sandbox_executor(
             settings=settings,
             broker=broker,
             http_transport=http_transport,
+            live_ledger=live_ledger,
         )
 
     paper_broker = _resolve_paper_broker(
@@ -293,6 +309,7 @@ def _build_live_sandbox_executor(
     settings: Settings,
     broker: Broker | None,
     http_transport: Any | None,
+    live_ledger: JsonLiveOrderLedger,
 ) -> BrokerOrderExecutor:
     # M13.2 remediation: never accept injected broker instances under live.
     # Sandbox adapters must come from the approved registry path only.
@@ -326,6 +343,7 @@ def _build_live_sandbox_executor(
         max_order_notional=settings.live_max_order_notional,
         max_orders_per_day=settings.live_max_orders_per_day,
         counter=LiveOrderCounter(),
+        ledger=live_ledger,
     )
     try:
         guarded.connect()
@@ -333,7 +351,7 @@ def _build_live_sandbox_executor(
         raise ConfigurationError(
             f"sandbox broker connect failed: {exc.__class__.__name__}"
         ) from exc
-    return BrokerOrderExecutor(guarded)
+    return IdempotentLiveExecutor(guarded, ledger=live_ledger)
 
 
 def _resolve_paper_broker(

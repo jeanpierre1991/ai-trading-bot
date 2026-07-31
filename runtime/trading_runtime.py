@@ -57,8 +57,10 @@ from runtime.base import TradingRuntime
 from runtime.context import RuntimeContext
 from runtime.executor import OrderExecutor
 from runtime.fills import execution_to_fill, is_bookable
+from runtime.live_order_ledger import JsonLiveOrderLedger
 from runtime.mode_policy import mode_policy_violation
 from runtime.models import PipelineResult, TradeIntent
+from runtime.reconcile import ReconcilePolicy, reconcile_live
 from runtime.risk_gate import apply_risk_gate
 from strategy_engine.signal import StrategySignal
 
@@ -113,6 +115,7 @@ class BasicTradingRuntime(TradingRuntime):
         session_calendar: SessionCalendar | None = None,
         execution: str = "dry_run",
         command: str = "run-once",
+        live_ledger: JsonLiveOrderLedger | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -124,6 +127,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._alert_notifier = alert_notifier
         self._execution = execution
         self._command = command
+        self._live_ledger = live_ledger
         self._clock = clock if clock is not None else utc_now
         self._session_calendar = session_calendar
 
@@ -210,6 +214,29 @@ class BasicTradingRuntime(TradingRuntime):
                 aborted_reason=mode_abort,
                 portfolio_snapshot=self._portfolio_snapshot(),
             )
+
+        if self._execution == "live":
+            reconcile_abort = self._live_reconcile_abort_reason()
+            if reconcile_abort is not None:
+                _log_runtime_event(
+                    "reconcile_abort",
+                    level=logging.WARNING,
+                    symbol=context.symbol,
+                    stage="reconcile",
+                    reason=reconcile_abort,
+                )
+                _log_runtime_event(
+                    "cycle_end",
+                    symbol=context.symbol,
+                    success=False,
+                    stage="reconcile",
+                )
+                return PipelineResult(
+                    success=False,
+                    stage_reached="reconcile",
+                    aborted_reason=reconcile_abort,
+                    portfolio_snapshot=self._portfolio_snapshot(),
+                )
 
         try:
             bars = self._market_data.get_bars(
@@ -830,6 +857,28 @@ class BasicTradingRuntime(TradingRuntime):
             _logger.warning("alert_send_failed title=%s error=%s", title, exc)
             return 0
         return 1 if sent else 0
+
+    def _live_reconcile_abort_reason(self) -> str | None:
+        """M13.3 abort-only reconcile before market data / new exposure."""
+        if self._live_ledger is None:
+            return "execution='live' requires a live order ledger for reconciliation"
+        if self._executor is None or not hasattr(self._executor, "broker"):
+            return "execution='live' requires a broker-backed executor for reconciliation"
+        broker = getattr(self._executor, "broker", None)
+        epsilon = getattr(
+            self._settings,
+            "live_entry_price_epsilon",
+            Decimal("0.0001"),
+        )
+        decision = reconcile_live(
+            ledger=self._live_ledger,
+            broker=broker,
+            portfolio=self._portfolio,
+            entry_price_epsilon=Decimal(str(epsilon)),
+        )
+        if decision.policy is ReconcilePolicy.ABORT:
+            return f"{decision.code.value}: {decision.reason}"
+        return None
 
     def _create_order_record(self, intent: TradeIntent) -> OrderRecord | None:
         """Register a PENDING order when an OrderManager is injected."""

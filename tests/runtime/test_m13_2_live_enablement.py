@@ -28,6 +28,7 @@ from runtime.broker_executor import BrokerOrderExecutor
 from runtime.context import RuntimeContext
 from runtime.dry_run import DryRunExecutor
 from runtime.factory import create_trading_runtime
+from runtime.idempotent_submit import IdempotentLiveExecutor
 from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter
 from runtime.live_enablement import (
     EXPECTED_LIVE_CONFIRM_TOKEN,
@@ -98,6 +99,7 @@ class _RecordingTransport:
         url: str,
         *,
         headers: dict[str, str] | None = None,
+        body: bytes | None = None,
         json_body: dict[str, Any] | None = None,
         timeout: float = 30.0,
     ) -> HttpResponse:
@@ -107,8 +109,15 @@ class _RecordingTransport:
                 "url": url,
                 "headers": dict(headers or {}),
                 "json_body": json_body,
+                "body": body,
             }
         )
+        # M13.3 reconcile probes — empty match for a fresh ledger.
+        if method.upper() == "GET" and (
+            "/v2/positions" in url
+            or ("/v2/orders" in url and "by_client_order_id" not in url)
+        ):
+            return HttpResponse(status_code=200, headers={}, body=b"[]")
         return self._response
 
 
@@ -254,54 +263,63 @@ def test_g6_g7_g8_context_failures() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_factory_live_sandbox_wires_cap_guarded_alpaca() -> None:
+def test_factory_live_sandbox_wires_cap_guarded_alpaca(tmp_path: Any) -> None:
     transport = _RecordingTransport()
     runtime = create_trading_runtime(
-        _live_settings(),
+        _live_settings(live_order_ledger_path=tmp_path / "ledger.json"),
         execution="live",
         live_command="run-once",
         http_transport=transport,
         **_explicit_deps(),
     )
-    assert isinstance(runtime.executor, BrokerOrderExecutor)
+    assert isinstance(runtime.executor, IdempotentLiveExecutor)
     assert isinstance(runtime.executor.broker, LiveCapGuardBroker)
     assert isinstance(runtime.executor.broker.inner, AlpacaBroker)
 
 
-def test_factory_live_production_unreachable() -> None:
+def test_factory_live_production_unreachable(tmp_path: Any) -> None:
     with pytest.raises(ConfigurationError, match="G9|LIVE_PRODUCTION|M14"):
         create_trading_runtime(
-            _live_settings(broker_endpoint_class="live_production"),
+            _live_settings(
+                broker_endpoint_class="live_production",
+                live_order_ledger_path=tmp_path / "ledger.json",
+            ),
             execution="live",
             live_command="run-once",
             **_explicit_deps(),
         )
 
 
-def test_factory_live_plus_paper_mode_denies() -> None:
+def test_factory_live_plus_paper_mode_denies(tmp_path: Any) -> None:
     with pytest.raises(ConfigurationError, match="G1"):
         create_trading_runtime(
-            _live_settings(trading_mode="paper"),
+            _live_settings(
+                trading_mode="paper",
+                live_order_ledger_path=tmp_path / "ledger.json",
+            ),
             execution="live",
             live_command="run-once",
             **_explicit_deps(),
         )
 
 
-def test_factory_unknown_broker_no_paper_fallback() -> None:
+def test_factory_unknown_broker_no_paper_fallback(tmp_path: Any) -> None:
     with pytest.raises(ConfigurationError, match="G4|approved"):
         create_trading_runtime(
-            _live_settings(broker_name="not_a_real_adapter"),
+            _live_settings(
+                broker_name="not_a_real_adapter",
+                live_order_ledger_path=tmp_path / "ledger.json",
+            ),
             execution="live",
             live_command="run-once",
             **_explicit_deps(),
         )
 
 
-def test_factory_rejects_paperbroker_injection_on_live() -> None:
+def test_factory_rejects_paperbroker_injection_on_live(tmp_path: Any) -> None:
     with pytest.raises(ConfigurationError, match="injected broker|registry"):
         create_trading_runtime(
-            _live_settings(),
+            _live_settings(live_order_ledger_path=tmp_path / "ledger.json"),
             execution="live",
             live_command="run-once",
             broker=PaperBroker(),
@@ -309,11 +327,11 @@ def test_factory_rejects_paperbroker_injection_on_live() -> None:
         )
 
 
-def test_factory_rejects_arbitrary_injected_broker_on_live() -> None:
+def test_factory_rejects_arbitrary_injected_broker_on_live(tmp_path: Any) -> None:
     """MAJOR remediation: injected non-PaperBroker cannot bypass registry."""
     with pytest.raises(ConfigurationError, match="injected broker|registry"):
         create_trading_runtime(
-            _live_settings(),
+            _live_settings(live_order_ledger_path=tmp_path / "ledger.json"),
             execution="live",
             live_command="run-once",
             broker=_FakeQuoteBroker(),
@@ -345,19 +363,19 @@ def test_execution_paper_still_accepts_explicit_paperbroker() -> None:
     assert runtime.executor.broker is paper
 
 
-def test_factory_live_requires_command() -> None:
+def test_factory_live_requires_command(tmp_path: Any) -> None:
     with pytest.raises(ConfigurationError, match="live_command"):
         create_trading_runtime(
-            _live_settings(),
+            _live_settings(live_order_ledger_path=tmp_path / "ledger.json"),
             execution="live",
             **_explicit_deps(),
         )
 
 
-def test_factory_live_rejects_operator_command() -> None:
+def test_factory_live_rejects_operator_command(tmp_path: Any) -> None:
     with pytest.raises(ConfigurationError, match="run-once|run-session"):
         create_trading_runtime(
-            _live_settings(),
+            _live_settings(live_order_ledger_path=tmp_path / "ledger.json"),
             execution="live",
             live_command="run-paper-operator",
             **_explicit_deps(),
@@ -573,9 +591,9 @@ def test_secret_not_in_authorization_denials() -> None:
     assert EXPECTED_LIVE_CONFIRM_TOKEN not in text
 
 
-def test_runtime_live_path_mode_policy_allows_when_authorized() -> None:
+def test_runtime_live_path_mode_policy_allows_when_authorized(tmp_path: Any) -> None:
     transport = _RecordingTransport()
-    settings = _live_settings()
+    settings = _live_settings(live_order_ledger_path=tmp_path / "ledger.json")
     runtime = create_trading_runtime(
         settings,
         execution="live",

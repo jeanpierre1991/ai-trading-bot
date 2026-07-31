@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     live_max_order_notional: Decimal | None = None
     live_max_orders_per_day: int | None = None
     live_max_gross_notional: Decimal | None = None
+    # M13.3: atomic JSON live order ledger (required for execution=live)
+    live_order_ledger_path: Path | None = None
+    # R2: relative epsilon for avg entry reconcile
+    live_entry_price_epsilon: Decimal = Decimal("0.0001")
 
     # Broker
     broker_name: str = "paper"
@@ -96,6 +100,15 @@ class Settings(BaseSettings):
     @classmethod
     def _coerce_log_dir(cls, value: str | Path) -> Path:
         return Path(value)
+
+    @field_validator("live_order_ledger_path", mode="before")
+    @classmethod
+    def _empty_path_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return Path(value) if not isinstance(value, Path) else value
 
     @field_validator(
         "live_max_order_notional",

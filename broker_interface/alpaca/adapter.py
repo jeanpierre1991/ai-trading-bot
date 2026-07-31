@@ -20,6 +20,11 @@ from broker_interface.broker import Broker, BrokerStatus
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from broker_interface.http_transport import HttpTransport, UrllibHttpTransport
 from broker_interface.orders import BrokerOrderRequest
+from broker_interface.snapshots import (
+    BrokerOrderSnapshot,
+    BrokerOrderStatus,
+    BrokerPositionSnapshot,
+)
 from core.exceptions import ConfigurationError
 from core.types import OrderId, OrderType, Side, Symbol
 
@@ -271,6 +276,72 @@ class AlpacaBroker(Broker):
             raise ConfigurationError("Alpaca order status response was not a JSON object")
         return payload
 
+    def get_order_snapshot(self, broker_order_id: str) -> BrokerOrderSnapshot | None:
+        try:
+            payload = self.get_order(broker_order_id)
+        except ConfigurationError as exc:
+            text = str(exc).lower()
+            if "404" in text or "not found" in text:
+                return None
+            raise
+        return _snapshot_from_alpaca_order(payload)
+
+    def get_order_by_client_id(self, client_order_id: str) -> BrokerOrderSnapshot | None:
+        cid = str(client_order_id or "").strip()
+        if not cid:
+            raise ConfigurationError("client_order_id must be non-empty")
+        try:
+            payload = self._request_json(
+                "GET",
+                f"{self._base_url}/v2/orders:by_client_order_id/{cid}",
+            )
+        except ConfigurationError as exc:
+            text = str(exc).lower()
+            if "404" in text or "not found" in text:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            raise ConfigurationError("Alpaca client-order response was not a JSON object")
+        return _snapshot_from_alpaca_order(payload)
+
+    def list_open_orders(self) -> list[BrokerOrderSnapshot]:
+        payload = self._request_json(
+            "GET",
+            f"{self._base_url}/v2/orders?status=open&limit=500",
+        )
+        if not isinstance(payload, list):
+            raise ConfigurationError("Alpaca open orders response must be a JSON list")
+        return [_snapshot_from_alpaca_order(item) for item in payload]
+
+    def list_positions(self) -> list[BrokerPositionSnapshot]:
+        payload = self._request_json("GET", f"{self._base_url}/v2/positions")
+        if not isinstance(payload, list):
+            raise ConfigurationError("Alpaca positions response must be a JSON list")
+        out: list[BrokerPositionSnapshot] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ConfigurationError("Alpaca position entry must be an object")
+            symbol = str(item.get("symbol") or "").strip().upper()
+            if not symbol:
+                raise ConfigurationError("Alpaca position missing symbol")
+            qty = _decimal_field(item.get("qty", "0"), field_name="qty", default=Decimal("0"))
+            avg_raw = item.get("avg_entry_price")
+            avg = (
+                _decimal_field(avg_raw, field_name="avg_entry_price")
+                if avg_raw not in (None, "")
+                else None
+            )
+            if qty == 0:
+                continue
+            out.append(
+                BrokerPositionSnapshot(
+                    symbol=Symbol(symbol),
+                    quantity=qty.quantize(_QTY),
+                    avg_entry_price=avg.quantize(_PRICE) if avg is not None else None,
+                )
+            )
+        return out
+
     def _map_order_payload(
         self,
         payload: Mapping[str, Any],
@@ -399,6 +470,81 @@ class AlpacaBroker(Broker):
             status=ExecutionStatus.REJECTED,
             message=message,
         )
+
+
+def _snapshot_from_alpaca_order(payload: Mapping[str, Any]) -> BrokerOrderSnapshot:
+    if not isinstance(payload, dict):
+        raise ConfigurationError("Alpaca order snapshot payload must be an object")
+    broker_order_id = str(payload.get("id") or "").strip()
+    if not broker_order_id:
+        raise ConfigurationError("Alpaca order snapshot missing id")
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    if not symbol:
+        raise ConfigurationError("Alpaca order snapshot missing symbol")
+    side_text = str(payload.get("side") or "").strip().lower()
+    if side_text == "buy":
+        side = Side.BUY
+    elif side_text == "sell":
+        side = Side.SELL
+    else:
+        raise ConfigurationError(f"Alpaca order snapshot invalid side={side_text!r}")
+    qty = _decimal_field(payload.get("qty", "0"), field_name="qty", default=Decimal("0"))
+    filled = _decimal_field(
+        payload.get("filled_qty", "0"),
+        field_name="filled_qty",
+        default=Decimal("0"),
+    )
+    avg_raw = payload.get("filled_avg_price")
+    avg = (
+        _decimal_field(avg_raw, field_name="filled_avg_price")
+        if avg_raw not in (None, "")
+        else None
+    )
+    raw_status = str(payload.get("status") or "").strip().lower()
+    status = _normalize_alpaca_order_status(raw_status, filled_qty=filled)
+    cid = payload.get("client_order_id")
+    return BrokerOrderSnapshot(
+        broker_order_id=broker_order_id,
+        client_order_id=str(cid).strip() if cid not in (None, "") else None,
+        symbol=Symbol(symbol),
+        side=side,
+        quantity=qty.quantize(_QTY),
+        filled_quantity=filled.quantize(_QTY),
+        status=status,
+        avg_fill_price=avg.quantize(_PRICE) if avg is not None else None,
+        raw_status=raw_status or None,
+    )
+
+
+def _normalize_alpaca_order_status(
+    raw_status: str,
+    *,
+    filled_qty: Decimal,
+) -> BrokerOrderStatus:
+    if raw_status in {"filled"}:
+        return BrokerOrderStatus.FILLED
+    if raw_status in {"partially_filled"}:
+        return BrokerOrderStatus.PARTIALLY_FILLED
+    if raw_status in {"canceled", "cancelled", "expired"}:
+        return BrokerOrderStatus.CANCELED
+    if raw_status in {"rejected", "suspended"}:
+        return BrokerOrderStatus.REJECTED
+    if raw_status in {
+        "new",
+        "accepted",
+        "pending_new",
+        "accepted_for_bidding",
+        "held",
+        "stopped",
+        "pending_cancel",
+        "pending_replace",
+        "calculated",
+        "done_for_day",
+    }:
+        if filled_qty > 0 and raw_status == "done_for_day":
+            return BrokerOrderStatus.FILLED
+        return BrokerOrderStatus.OPEN
+    return BrokerOrderStatus.UNKNOWN
 
 
 def _validate_paper_base_url(base_url: str) -> str:
