@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     live_order_ledger_path: Path | None = None
     # R2: relative epsilon for avg entry reconcile
     live_entry_price_epsilon: Decimal = Decimal("0.0001")
+    # M13.4: append-only JSONL shadow audit (required for execution=shadow)
+    shadow_audit_path: Path | None = None
 
     # Broker
     broker_name: str = "paper"
@@ -101,7 +103,7 @@ class Settings(BaseSettings):
     def _coerce_log_dir(cls, value: str | Path) -> Path:
         return Path(value)
 
-    @field_validator("live_order_ledger_path", mode="before")
+    @field_validator("live_order_ledger_path", "shadow_audit_path", mode="before")
     @classmethod
     def _empty_path_to_none(cls, value: object) -> object:
         if value is None:

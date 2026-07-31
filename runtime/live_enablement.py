@@ -1,8 +1,11 @@
-"""Broker-agnostic hard LIVE enablement gates (Milestone 13.2).
+"""Broker-agnostic hard LIVE enablement gates (Milestone 13.2 / 13.4).
 
 Pure checks: no I/O, no broker calls, no venue-specific imports.
 Conjunctive fail-closed authorization for supervised BROKER_SANDBOX wiring only.
-LIVE_PRODUCTION remains hard-denied in M13.2 (real-money trial is M14).
+LIVE_PRODUCTION remains hard-denied (real-money trial is M14).
+
+M13.4: ``evaluate_shadow_enablement`` applies the same G1–G5/G7–G10 checks with
+an explicit G6b shadow context gate. G6 for ``execution='live'`` is unchanged.
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ LiveCommand = Literal[
 
 @dataclass(frozen=True)
 class LiveExecutionContext:
-    """Call-site axes required for G6–G8 (and G9 class from settings)."""
+    """Call-site axes required for G6–G8 / G6b (and G9 class from settings)."""
 
     command: str
     execution: str
@@ -43,7 +46,7 @@ class LiveExecutionContext:
 
 @dataclass(frozen=True)
 class LiveAuthorization:
-    """Result of conjunctive G1–G10 evaluation."""
+    """Result of conjunctive G1–G10 (or shadow G6b) evaluation."""
 
     authorized: bool
     reason: str | None
@@ -55,10 +58,118 @@ def evaluate_live_enablement(
     settings: Any,
     context: LiveExecutionContext,
 ) -> LiveAuthorization:
-    """Return Authorized only when G1∧…∧G10 all pass for BROKER_SANDBOX.
+    """Return Authorized only when G1∧…∧G10 all pass for BROKER_SANDBOX live submit.
 
     Deny reasons never include API secrets or the confirm token value.
+    G6 continues to require ``execution='live'`` (not widened for shadow).
     """
+    common = _evaluate_common_live_gates(settings, context)
+    if not common.authorized:
+        return common
+
+    adapter_id = common.adapter_id
+    endpoint_class = common.endpoint_class
+
+    def deny(reason: str) -> LiveAuthorization:
+        return LiveAuthorization(
+            authorized=False,
+            reason=reason,
+            endpoint_class=endpoint_class or "unknown",
+            adapter_id=adapter_id or "unknown",
+        )
+
+    # G6 — execution context explicitly allows LIVE submit
+    if context.execution != "live":
+        return deny(
+            f"G6: factory execution must be 'live'; got {context.execution!r}"
+        )
+    if context.command not in {"run-once", "run-session"}:
+        return deny(
+            f"G6: command must be run-once or run-session for LIVE; "
+            f"got {context.command!r}"
+        )
+    if not isinstance(context.context_mode, TradingMode):
+        return deny(
+            f"G6: invalid RuntimeContext.mode={context.context_mode!r}; "
+            "expected TradingMode.LIVE"
+        )
+    if context.context_mode is not TradingMode.LIVE:
+        return deny(
+            "G6: RuntimeContext.mode must be LIVE when execution='live'; "
+            f"got {context.context_mode.value!r}"
+        )
+
+    return LiveAuthorization(
+        authorized=True,
+        reason=None,
+        endpoint_class=ENDPOINT_BROKER_SANDBOX,
+        adapter_id=adapter_id.lower(),
+    )
+
+
+def evaluate_shadow_enablement(
+    settings: Any,
+    context: LiveExecutionContext,
+) -> LiveAuthorization:
+    """Authorize no-submit shadow using G1–G5/G7–G10 plus explicit G6b.
+
+    Does not weaken G6 live-submit semantics. Never authorizes production.
+    """
+    common = _evaluate_common_live_gates(settings, context)
+    if not common.authorized:
+        return common
+
+    adapter_id = common.adapter_id
+    endpoint_class = common.endpoint_class
+
+    def deny(reason: str) -> LiveAuthorization:
+        return LiveAuthorization(
+            authorized=False,
+            reason=reason,
+            endpoint_class=endpoint_class or "unknown",
+            adapter_id=adapter_id or "unknown",
+        )
+
+    # G6b — shadow-specific context gate (explicit; does not alter G6)
+    if context.execution != "shadow":
+        return deny(
+            f"G6b: factory execution must be 'shadow'; got {context.execution!r}"
+        )
+    if context.command not in {"run-once", "run-session"}:
+        return deny(
+            f"G6b: command must be run-once or run-session for SHADOW; "
+            f"got {context.command!r}"
+        )
+    if not isinstance(context.context_mode, TradingMode):
+        return deny(
+            f"G6b: invalid RuntimeContext.mode={context.context_mode!r}; "
+            "expected TradingMode.LIVE"
+        )
+    if context.context_mode is not TradingMode.LIVE:
+        return deny(
+            "G6b: RuntimeContext.mode must be LIVE when execution='shadow'; "
+            f"got {context.context_mode.value!r}"
+        )
+
+    # GS — shadow no-submit authorization marker (fail closed if production slipped)
+    if endpoint_class == ENDPOINT_LIVE_PRODUCTION:
+        return deny(
+            "GS: SHADOW cannot authorize LIVE_PRODUCTION; real-money trial requires M14"
+        )
+
+    return LiveAuthorization(
+        authorized=True,
+        reason=None,
+        endpoint_class=ENDPOINT_BROKER_SANDBOX,
+        adapter_id=adapter_id.lower(),
+    )
+
+
+def _evaluate_common_live_gates(
+    settings: Any,
+    context: LiveExecutionContext,
+) -> LiveAuthorization:
+    """Shared G1–G5, G7–G10 (and G9) checks for live submit and shadow."""
     adapter_id = str(getattr(settings, "broker_name", "") or "").strip()
     endpoint_class = str(
         getattr(settings, "broker_endpoint_class", "") or ""
@@ -136,27 +247,6 @@ def evaluate_live_enablement(
     # G8 — paper operator prohibited
     if context.command == "run-paper-operator":
         return deny("G8: run-paper-operator cannot enable LIVE")
-
-    # G6 — execution context explicitly allows LIVE
-    if context.execution != "live":
-        return deny(
-            f"G6: factory execution must be 'live'; got {context.execution!r}"
-        )
-    if context.command not in {"run-once", "run-session"}:
-        return deny(
-            f"G6: command must be run-once or run-session for LIVE; "
-            f"got {context.command!r}"
-        )
-    if not isinstance(context.context_mode, TradingMode):
-        return deny(
-            f"G6: invalid RuntimeContext.mode={context.context_mode!r}; "
-            "expected TradingMode.LIVE"
-        )
-    if context.context_mode is not TradingMode.LIVE:
-        return deny(
-            "G6: RuntimeContext.mode must be LIVE when execution='live'; "
-            f"got {context.context_mode.value!r}"
-        )
 
     # G10 — mandatory absolute caps > 0
     max_notional = getattr(settings, "live_max_order_notional", None)

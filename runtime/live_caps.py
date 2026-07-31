@@ -9,6 +9,7 @@ daily slot across process restart (Decision C1). Fail closed before broker
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,44 @@ from core.types import OrderId, Side, Symbol
 
 if TYPE_CHECKING:
     from runtime.live_order_ledger import JsonLiveOrderLedger
+
+
+@dataclass(frozen=True)
+class CapEvaluation:
+    """Read-only cap check result (does not mutate counters)."""
+
+    order_notional_ok: bool
+    daily_count_ok: bool
+    notional: Decimal
+    current_count: int
+    would_consume_slot: bool = False
+
+
+def evaluate_order_caps(
+    *,
+    quantity: Decimal,
+    quote: Decimal,
+    max_order_notional: Decimal,
+    max_orders_per_day: int,
+    current_count: int,
+    already_counted: bool = False,
+) -> CapEvaluation:
+    """Hypothetically evaluate G10 caps without recording a submit."""
+    notional = Decimal(str(quantity)) * Decimal(str(quote))
+    order_ok = notional <= Decimal(str(max_order_notional))
+    if already_counted:
+        daily_ok = True
+        would_consume = False
+    else:
+        daily_ok = int(current_count) < int(max_orders_per_day)
+        would_consume = False  # shadow / dry evaluation never consumes
+    return CapEvaluation(
+        order_notional_ok=order_ok,
+        daily_count_ok=daily_ok,
+        notional=notional,
+        current_count=int(current_count),
+        would_consume_slot=would_consume,
+    )
 
 
 class LiveOrderCounter:

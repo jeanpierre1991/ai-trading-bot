@@ -51,6 +51,7 @@ def _add_execution_flags(
     parser: argparse.ArgumentParser,
     *,
     allow_live: bool = False,
+    allow_shadow: bool = False,
 ) -> None:
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument(
@@ -70,6 +71,15 @@ def _add_execution_flags(
             help=(
                 "M13.2 supervised BROKER_SANDBOX path only when all live gates "
                 "pass (not a real-money trial; LIVE_PRODUCTION remains denied)"
+            ),
+        )
+    if allow_shadow:
+        execution.add_argument(
+            "--shadow",
+            action="store_true",
+            help=(
+                "M13.4 no-submit shadow: live-gated signal/intent path with "
+                "JSONL audit; never place_order; LIVE_PRODUCTION remains denied"
             ),
         )
 
@@ -95,7 +105,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "run-once",
         help="Run one paper/dry-run decision cycle (Milestone 8); optional gated --live sandbox",
     )
-    _add_execution_flags(run_once_parser, allow_live=True)
+    _add_execution_flags(run_once_parser, allow_live=True, allow_shadow=True)
     run_once_parser.add_argument(
         "--symbol",
         default=None,
@@ -128,7 +138,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"optional gated --live sandbox; cycles must be 1..{MAX_SESSION_CYCLES}"
         ),
     )
-    _add_execution_flags(run_session_parser, allow_live=True)
+    _add_execution_flags(run_session_parser, allow_live=True, allow_shadow=True)
     run_session_parser.add_argument(
         "--cycles",
         type=int,
@@ -281,6 +291,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _execution_from_args(args: argparse.Namespace) -> str:
     """Map CLI flags to factory execution. Default is dry_run."""
+    if getattr(args, "shadow", False):
+        return "shadow"
     if getattr(args, "live", False):
         return "live"
     if getattr(args, "paper", False):
@@ -289,7 +301,7 @@ def _execution_from_args(args: argparse.Namespace) -> str:
 
 
 def _context_mode_for_execution(execution: str) -> TradingMode:
-    if execution == "live":
+    if execution in {"live", "shadow"}:
         return TradingMode.LIVE
     return TradingMode.PAPER
 
@@ -442,15 +454,19 @@ def _run_paper_operator_command(settings: Settings, args: argparse.Namespace) ->
             raise ConfigurationError(
                 "run-paper-operator does not support --live (G8); paper-only"
             )
+        if getattr(args, "shadow", False):
+            raise ConfigurationError(
+                "run-paper-operator does not support --shadow; paper-only"
+            )
         if settings.trading_mode != "paper":
             raise ConfigurationError(
                 "run-paper-operator requires trading_mode='paper'; "
                 f"got {settings.trading_mode!r}"
             )
         execution = _execution_from_args(args)
-        if execution == "live":
+        if execution in {"live", "shadow"}:
             raise ConfigurationError(
-                "run-paper-operator cannot use execution='live' (G8)"
+                f"run-paper-operator cannot use execution={execution!r}"
             )
         runtime = create_trading_runtime_from_app(
             app,

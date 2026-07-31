@@ -62,6 +62,8 @@ from runtime.mode_policy import mode_policy_violation
 from runtime.models import PipelineResult, TradeIntent
 from runtime.reconcile import ReconcilePolicy, reconcile_live
 from runtime.risk_gate import apply_risk_gate
+from runtime.shadow_executor import ShadowExecutor, build_shadow_observation
+from runtime.shadow_record import ShadowAuditLog
 from strategy_engine.signal import StrategySignal
 
 _QTY = Decimal("0.0001")
@@ -116,6 +118,7 @@ class BasicTradingRuntime(TradingRuntime):
         execution: str = "dry_run",
         command: str = "run-once",
         live_ledger: JsonLiveOrderLedger | None = None,
+        shadow_audit: ShadowAuditLog | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -128,6 +131,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._execution = execution
         self._command = command
         self._live_ledger = live_ledger
+        self._shadow_audit = shadow_audit
         self._clock = clock if clock is not None else utc_now
         self._session_calendar = session_calendar
 
@@ -375,6 +379,14 @@ class BasicTradingRuntime(TradingRuntime):
         snapshot = self._portfolio_snapshot()
 
         if signal.action is SignalAction.HOLD:
+            self._record_shadow_pre_submit(
+                context=context,
+                signal=signal,
+                risk_decision="allow",
+                risk_reason=None,
+                hypothetical_execution_decision="hold",
+                bars=bars,
+            )
             _log_runtime_event(
                 "hold_success",
                 symbol=context.symbol,
@@ -399,6 +411,14 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if not gate.approved:
+            self._record_shadow_pre_submit(
+                context=context,
+                signal=signal,
+                risk_decision="reject",
+                risk_reason=gate.aborted_reason,
+                hypothetical_execution_decision="blocked_risk",
+                bars=bars,
+            )
             _log_runtime_event(
                 "risk_abort",
                 level=logging.WARNING,
@@ -857,6 +877,59 @@ class BasicTradingRuntime(TradingRuntime):
             _logger.warning("alert_send_failed title=%s error=%s", title, exc)
             return 0
         return 1 if sent else 0
+
+    def _record_shadow_pre_submit(
+        self,
+        *,
+        context: RuntimeContext,
+        signal: StrategySignal,
+        risk_decision: str,
+        risk_reason: str | None,
+        hypothetical_execution_decision: str,
+        bars: Any,
+    ) -> None:
+        """Persist shadow JSONL for hold/risk paths (D-S4). Never submits."""
+        if self._execution != "shadow":
+            return
+        audit = self._shadow_audit
+        if audit is None and isinstance(self._executor, ShadowExecutor):
+            audit = self._executor.audit
+        if audit is None:
+            return
+        signal_price = self._bar_close_price(bars)
+        record = build_shadow_observation(
+            command=self._command,
+            broker_adapter_id=str(self._settings.broker_name or "unknown"),
+            broker_endpoint_class=str(self._settings.broker_endpoint_class or "unknown"),
+            symbol=context.symbol,
+            strategy_name=context.strategy_name or getattr(signal, "strategy_name", None),
+            signal_action=signal.action.value if signal is not None else None,
+            signal_confidence=getattr(signal, "confidence", None),
+            signal_price=signal_price,
+            risk_decision=risk_decision,
+            risk_reason=risk_reason,
+            hypothetical_execution_decision=hypothetical_execution_decision,
+            arrival_price=signal_price,
+        )
+        audit.append(record)
+
+    @staticmethod
+    def _bar_close_price(bars: Any) -> Decimal | None:
+        if not bars:
+            return None
+        bar = bars[-1]
+        close = getattr(bar, "close", None)
+        if close is None and isinstance(bar, dict):
+            close = bar.get("close")
+        if close is None:
+            return None
+        try:
+            value = Decimal(str(close))
+        except Exception:
+            return None
+        if value <= 0:
+            return None
+        return value
 
     def _live_reconcile_abort_reason(self) -> str | None:
         """M13.3 abort-only reconcile before market data / new exposure."""

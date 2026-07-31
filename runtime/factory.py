@@ -28,14 +28,21 @@ from runtime.broker_executor import BrokerOrderExecutor
 from runtime.dry_run import DryRunExecutor
 from runtime.idempotent_submit import IdempotentLiveExecutor, require_live_ledger_path
 from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter
-from runtime.live_enablement import LiveExecutionContext, evaluate_live_enablement
+from runtime.live_enablement import (
+    LiveExecutionContext,
+    evaluate_live_enablement,
+    evaluate_shadow_enablement,
+)
 from runtime.live_order_ledger import JsonLiveOrderLedger
+from runtime.shadow_executor import ShadowExecutor
+from runtime.shadow_record import ShadowAuditLog, require_shadow_audit_path
 from runtime.trading_runtime import BasicTradingRuntime
 
-ExecutionBackend = Literal["dry_run", "paper", "live"]
+ExecutionBackend = Literal["dry_run", "paper", "live", "shadow"]
 _ALLOWED_PAPER_SETTINGS_MODES = frozenset({"paper"})
-_ALLOWED_EXECUTIONS = frozenset({"dry_run", "paper", "live"})
+_ALLOWED_EXECUTIONS = frozenset({"dry_run", "paper", "live", "shadow"})
 _LIVE_COMMANDS = frozenset({"run-once", "run-session"})
+_SHADOW_COMMANDS = frozenset({"run-once", "run-session"})
 
 
 def create_trading_runtime(
@@ -61,24 +68,31 @@ def create_trading_runtime(
     ----------
     settings:
         Application settings. ``trading_mode`` must be ``\"paper\"`` for
-        dry-run/paper execution. For ``execution=\"live\"``, all live gates
-        must pass and endpoint class must be ``broker_sandbox``.
+        dry-run/paper execution. For ``execution=\"live\"`` / ``\"shadow\"``,
+        all live/shadow gates must pass and endpoint class must be
+        ``broker_sandbox``.
     execution:
         ``\"dry_run\"`` → ``DryRunExecutor``;
         ``\"paper\"`` → ``BrokerOrderExecutor(PaperBroker)``;
-        ``\"live\"`` → gated BROKER_SANDBOX adapter (never LIVE_PRODUCTION).
+        ``\"live\"`` → gated BROKER_SANDBOX adapter (never LIVE_PRODUCTION);
+        ``\"shadow\"`` → no-submit ``ShadowExecutor`` (never place_order).
     live_command:
-        Required when ``execution=\"live\"``: ``run-once`` or ``run-session``.
+        Required when ``execution=\"live\"`` or ``\"shadow\"``:
+        ``run-once`` or ``run-session``.
     http_transport:
         Optional injectable transport for sandbox adapter construction (tests).
         Live brokers themselves cannot be injected via ``broker=``; they must
         come from the approved BROKER_SANDBOX registry path.
+        Shadow never constructs a broker client.
     """
     _validate_execution(execution)
 
     if execution == "live":
         command = _require_live_command(live_command)
         _authorize_live_sandbox(settings, command=command)
+    elif execution == "shadow":
+        command = _require_shadow_command(live_command)
+        _authorize_shadow(settings, command=command)
     else:
         command = live_command or "run-once"
         _validate_paper_settings_mode(settings)
@@ -106,10 +120,13 @@ def create_trading_runtime(
         raise ConfigurationError(str(exc)) from exc
 
     live_ledger: JsonLiveOrderLedger | None = None
+    shadow_audit: ShadowAuditLog | None = None
     if execution == "live":
         ledger_path = require_live_ledger_path(settings.live_order_ledger_path)
         live_ledger = JsonLiveOrderLedger(ledger_path)
         live_ledger.ensure_ready()
+    if execution == "shadow":
+        shadow_audit = ShadowAuditLog(require_shadow_audit_path(settings.shadow_audit_path))
 
     resolved_executor = _build_executor(
         execution=execution,
@@ -120,6 +137,8 @@ def create_trading_runtime(
         session_calendar=session_calendar,
         http_transport=http_transport,
         live_ledger=live_ledger,
+        shadow_audit=shadow_audit,
+        command=command,
     )
 
     return BasicTradingRuntime(
@@ -133,8 +152,13 @@ def create_trading_runtime(
         alert_notifier=resolved_alert_notifier,
         session_calendar=session_calendar,
         execution=execution,
-        command=command if execution == "live" else (live_command or "run-once"),
+        command=(
+            command
+            if execution in {"live", "shadow"}
+            else (live_command or "run-once")
+        ),
         live_ledger=live_ledger,
+        shadow_audit=shadow_audit,
     )
 
 
@@ -165,8 +189,9 @@ def _validate_paper_settings_mode(settings: Settings) -> None:
     mode = settings.trading_mode
     if mode == "live":
         raise ConfigurationError(
-            "trading_mode='live' requires execution='live' with all live gates; "
-            "paper/dry-run factory paths permit trading_mode='paper' only"
+            "trading_mode='live' requires execution='live' or execution='shadow' "
+            "with all live/shadow gates; paper/dry-run factory paths permit "
+            "trading_mode='paper' only"
         )
     if mode not in _ALLOWED_PAPER_SETTINGS_MODES:
         raise ConfigurationError(
@@ -179,7 +204,7 @@ def _validate_execution(execution: str) -> None:
     if execution not in _ALLOWED_EXECUTIONS:
         raise ConfigurationError(
             f"execution={execution!r} is not supported; "
-            "expected 'dry_run', 'paper', or 'live'"
+            "expected 'dry_run', 'paper', 'live', or 'shadow'"
         )
 
 
@@ -197,6 +222,20 @@ def _require_live_command(live_command: str | None) -> str:
     return command
 
 
+def _require_shadow_command(live_command: str | None) -> str:
+    if live_command is None or not str(live_command).strip():
+        raise ConfigurationError(
+            "execution='shadow' requires live_command='run-once' or 'run-session'"
+        )
+    command = str(live_command).strip()
+    if command not in _SHADOW_COMMANDS:
+        raise ConfigurationError(
+            f"execution='shadow' rejects command={command!r}; "
+            "only run-once and run-session are supervised SHADOW surfaces"
+        )
+    return command
+
+
 def _authorize_live_sandbox(settings: Settings, *, command: str) -> None:
     """Factory-time Authority check (mode_policy re-checks independently)."""
     auth = evaluate_live_enablement(
@@ -209,6 +248,20 @@ def _authorize_live_sandbox(settings: Settings, *, command: str) -> None:
     )
     if not auth.authorized:
         raise ConfigurationError(auth.reason or "live enablement denied")
+
+
+def _authorize_shadow(settings: Settings, *, command: str) -> None:
+    """Factory-time shadow Authority check (G6b; mode_policy re-checks)."""
+    auth = evaluate_shadow_enablement(
+        settings,
+        LiveExecutionContext(
+            command=command,
+            execution="shadow",
+            context_mode=TradingMode.LIVE,
+        ),
+    )
+    if not auth.authorized:
+        raise ConfigurationError(auth.reason or "shadow enablement denied")
 
 
 def _resolve_market_data(market_data: Any | None, registry: ModuleRegistry | None) -> Any:
@@ -278,7 +331,9 @@ def _build_executor(
     session_calendar: Any,
     http_transport: Any | None,
     live_ledger: JsonLiveOrderLedger | None = None,
-) -> DryRunExecutor | BrokerOrderExecutor:
+    shadow_audit: ShadowAuditLog | None = None,
+    command: str = "run-once",
+) -> DryRunExecutor | BrokerOrderExecutor | ShadowExecutor:
     if execution == "dry_run":
         return DryRunExecutor()
 
@@ -292,6 +347,41 @@ def _build_executor(
             broker=broker,
             http_transport=http_transport,
             live_ledger=live_ledger,
+        )
+
+    if execution == "shadow":
+        if shadow_audit is None:
+            raise ConfigurationError(
+                "execution='shadow' requires an initialized shadow audit log"
+            )
+        # No broker construction for shadow (D-S6): quotes from market data only.
+        if broker is not None:
+            raise ConfigurationError(
+                "execution='shadow' rejects broker= injection; "
+                "no-submit shadow must not construct a broker client"
+            )
+        assert settings.live_max_order_notional is not None
+        assert settings.live_max_orders_per_day is not None
+        quote_source = ClosedBarQuoteSource(
+            market_data,
+            freshness_enabled=False,
+            market_hours_enabled=False,
+            timeframe=settings.default_timeframe,
+            max_age_seconds=settings.market_data_max_age_seconds,
+            bar_periods=settings.market_data_freshness_bar_periods,
+            slack_seconds=settings.market_data_freshness_slack_seconds,
+            future_skew_seconds=settings.market_data_future_skew_seconds,
+            session_calendar=session_calendar,
+        )
+        return ShadowExecutor(
+            audit=shadow_audit,
+            quote_source=quote_source,
+            max_order_notional=settings.live_max_order_notional,
+            max_orders_per_day=settings.live_max_orders_per_day,
+            broker_adapter_id=settings.broker_name,
+            broker_endpoint_class=settings.broker_endpoint_class,
+            command=command,
+            counter=LiveOrderCounter(),
         )
 
     paper_broker = _resolve_paper_broker(
