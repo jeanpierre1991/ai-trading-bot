@@ -125,7 +125,6 @@ def test_mode_policy_rejects_settings_live() -> None:
     )
     assert reason is not None
     assert "live" in reason
-    assert "not allowed" in reason
 
 
 def test_mode_policy_rejects_settings_backtest_and_unknown() -> None:
@@ -287,7 +286,7 @@ def test_run_once_rejects_non_paper_broker_before_execute() -> None:
     assert result.success is False
     assert result.stage_reached == "mode"
     assert result.aborted_reason is not None
-    assert "live brokers are blocked" in result.aborted_reason
+    assert "live brokers are blocked" in (result.aborted_reason or "")
     market_data.get_bars.assert_not_called()
     broker.place_order.assert_not_called()
     assert portfolio.summary() == before

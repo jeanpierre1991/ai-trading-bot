@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     max_daily_loss_pct: Decimal = Decimal("0.02")
     max_open_positions: int = 10
 
+    # M13.2 live enablement (default deny; BROKER_SANDBOX only when all gates pass)
+    live_trading_enabled: bool = False
+    live_confirm_token: str = ""
+    broker_endpoint_class: Literal[
+        "local_paper",
+        "broker_sandbox",
+        "live_production",
+    ] = "local_paper"
+    live_max_order_notional: Decimal | None = None
+    live_max_orders_per_day: int | None = None
+    live_max_gross_notional: Decimal | None = None
+
     # Broker
     broker_name: str = "paper"
     broker_api_key: str = ""
@@ -84,6 +96,28 @@ class Settings(BaseSettings):
     @classmethod
     def _coerce_log_dir(cls, value: str | Path) -> Path:
         return Path(value)
+
+    @field_validator(
+        "live_max_order_notional",
+        "live_max_gross_notional",
+        mode="before",
+    )
+    @classmethod
+    def _empty_decimal_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("live_max_orders_per_day", mode="before")
+    @classmethod
+    def _empty_int_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def is_production(self) -> bool:

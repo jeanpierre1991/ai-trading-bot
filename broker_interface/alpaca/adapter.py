@@ -462,11 +462,12 @@ def alpaca_paper_broker_from_settings(
     *,
     transport: HttpTransport | None = None,
 ) -> AlpacaBroker:
-    """Build an Alpaca paper adapter from Settings (not wired into factory in M13.1).
+    """Build an Alpaca paper/sandbox adapter from Settings.
 
     Uses ``broker_api_key`` / ``broker_api_secret`` / ``broker_base_url``.
     If ``broker_base_url`` is the legacy placeholder, substitutes the Alpaca
     paper URL. Live host remains rejected by ``AlpacaBroker`` construction.
+    Factory wires this only under M13.2 ``execution='live'`` + all gates.
     """
     # Local import keeps settings dependency optional for pure adapter unit tests.
     base = str(getattr(settings, "broker_base_url", "") or "").strip()

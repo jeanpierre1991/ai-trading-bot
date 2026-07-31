@@ -88,7 +88,7 @@ def test_factory_rejects_unsupported_execution() -> None:
     with pytest.raises(ConfigurationError, match="execution"):
         create_trading_runtime(
             settings,
-            execution="live",  # type: ignore[arg-type]
+            execution="unknown",  # type: ignore[arg-type]
             **_explicit_deps(),
         )
 

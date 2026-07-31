@@ -8,8 +8,9 @@ Bookable ``ExecutionResult`` values (typically ``FILLED``) are mapped with
 ``execution_to_fill`` and applied via ``Portfolio.apply_fill``. Rejected or
 non-bookable executions do not mutate the portfolio.
 
-M8 mode policy: only paper / dry-run execution is allowed. ``trading_mode=live``,
-backtest, and non-paper broker executors are rejected before the cycle runs.
+Mode policy: paper / dry-run by default. M13.2 gated ``execution='live'`` may
+use an approved BROKER_SANDBOX adapter when LiveEnablementAuthority authorizes
+all gates; LIVE_PRODUCTION remains denied.
 
 M8.3 observability: structured cycle logs via ``trading_bot.runtime`` (no
 behavioral changes).
@@ -85,9 +86,10 @@ class BasicTradingRuntime(TradingRuntime):
     this contract. After a bookable fill, the portfolio is updated through
     ``apply_fill`` and ``stage_reached`` becomes ``\"portfolio\"``.
 
-    Allowed executors: ``None``, ``DryRunExecutor``, or
-    ``BrokerOrderExecutor(PaperBroker)``. Live mode and non-paper brokers are
-    rejected by the mode policy before market data is fetched.
+    Allowed executors: ``None``, ``DryRunExecutor``,
+    ``BrokerOrderExecutor(PaperBroker)`` on paper paths, or a gated live
+    sandbox ``BrokerOrderExecutor`` when factory ``execution='live'`` and
+    mode policy re-authorizes.
 
     ``order_manager`` is optional; when omitted, ``PipelineResult.order`` stays
     ``None`` (post-M8.3 behavior).
@@ -109,6 +111,8 @@ class BasicTradingRuntime(TradingRuntime):
         alert_notifier: AlertNotifier | None = None,
         clock: Callable[[], datetime] | None = None,
         session_calendar: SessionCalendar | None = None,
+        execution: str = "dry_run",
+        command: str = "run-once",
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -118,6 +122,8 @@ class BasicTradingRuntime(TradingRuntime):
         self._executor = executor
         self._order_manager = order_manager
         self._alert_notifier = alert_notifier
+        self._execution = execution
+        self._command = command
         self._clock = clock if clock is not None else utc_now
         self._session_calendar = session_calendar
 
@@ -178,9 +184,11 @@ class BasicTradingRuntime(TradingRuntime):
         )
 
         mode_abort = mode_policy_violation(
-            settings_trading_mode=self._settings.trading_mode,
+            settings=self._settings,
             context_mode=context.mode,
             executor=self._executor,
+            execution=self._execution,
+            command=self._command,
         )
         if mode_abort is not None:
             _log_runtime_event(

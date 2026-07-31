@@ -1,7 +1,11 @@
-"""Composition root for BasicTradingRuntime (Milestone 8.6).
+"""Composition root for BasicTradingRuntime (Milestone 8.6 / 13.2).
 
 Assembles existing components into a usable Runtime. Does not fetch market
 data, place orders, or run decision cycles.
+
+M13.2: ``execution='live'`` may wire an approved BROKER_SANDBOX adapter only
+when LiveEnablementAuthority authorizes all gates. LIVE_PRODUCTION is denied.
+There is no silent PaperBroker fallback for ``execution='live'``.
 """
 
 from __future__ import annotations
@@ -9,22 +13,27 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from alerts.notifier import AlertNotifier, ConsoleNotifier
-from broker_interface.broker import PaperBroker
+from broker_interface.adapter_registry import construct_sandbox_broker
+from broker_interface.broker import Broker, PaperBroker
 from broker_interface.quotes import ClosedBarQuoteSource
 from config.settings import Settings
 from core.exceptions import ConfigurationError
 from core.module_registry import ModuleRegistry
+from core.types import TradingMode
 from market_data.calendars.us_equity_xnys import build_session_calendar
 from order_manager.manager import OrderManager
 from risk_manager.base import RiskManager
 from risk_manager.basic import BasicRiskManager
 from runtime.broker_executor import BrokerOrderExecutor
 from runtime.dry_run import DryRunExecutor
+from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter
+from runtime.live_enablement import LiveExecutionContext, evaluate_live_enablement
 from runtime.trading_runtime import BasicTradingRuntime
 
-ExecutionBackend = Literal["dry_run", "paper"]
-_ALLOWED_SETTINGS_MODES = frozenset({"paper"})
-_ALLOWED_EXECUTIONS = frozenset({"dry_run", "paper"})
+ExecutionBackend = Literal["dry_run", "paper", "live"]
+_ALLOWED_PAPER_SETTINGS_MODES = frozenset({"paper"})
+_ALLOWED_EXECUTIONS = frozenset({"dry_run", "paper", "live"})
+_LIVE_COMMANDS = frozenset({"run-once", "run-session"})
 
 
 def create_trading_runtime(
@@ -36,40 +45,41 @@ def create_trading_runtime(
     strategy_engine: Any | None = None,
     portfolio: Any | None = None,
     risk_manager: RiskManager | None = None,
-    broker: PaperBroker | None = None,
+    broker: Broker | None = None,
     with_order_manager: bool = True,
     order_manager: OrderManager | None = None,
     with_alerts: bool = True,
     alert_notifier: AlertNotifier | None = None,
+    live_command: str | None = None,
+    http_transport: Any | None = None,
 ) -> BasicTradingRuntime:
     """Build a ``BasicTradingRuntime`` from settings and wired dependencies.
 
     Parameters
     ----------
     settings:
-        Application settings. ``trading_mode`` must be ``\"paper\"``.
+        Application settings. ``trading_mode`` must be ``\"paper\"`` for
+        dry-run/paper execution. For ``execution=\"live\"``, all live gates
+        must pass and endpoint class must be ``broker_sandbox``.
     execution:
         ``\"dry_run\"`` → ``DryRunExecutor``;
-        ``\"paper\"`` → ``BrokerOrderExecutor(PaperBroker)``.
-    registry:
-        Optional loaded module registry used when explicit deps are omitted.
-    market_data / strategy_engine / portfolio:
-        Explicit overrides (preferred in tests). Resolved from ``registry``
-        when omitted.
-    risk_manager:
-        Override; default is a fresh ``BasicRiskManager(settings)``.
-    broker:
-        Optional ``PaperBroker`` for ``execution=\"paper\"``.
-    with_order_manager / order_manager:
-        When ``with_order_manager`` is True, uses ``order_manager`` or a new
-        ``OrderManager()``. When False, injects ``None``.
-    with_alerts / alert_notifier:
-        When ``with_alerts`` is True, uses ``alert_notifier`` or a new
-        ``ConsoleNotifier()``. When False, injects ``None``.
-        Runtime still respects ``settings.alerts_enabled`` at send time.
+        ``\"paper\"`` → ``BrokerOrderExecutor(PaperBroker)``;
+        ``\"live\"`` → gated BROKER_SANDBOX adapter (never LIVE_PRODUCTION).
+    live_command:
+        Required when ``execution=\"live\"``: ``run-once`` or ``run-session``.
+    http_transport:
+        Optional injectable transport for sandbox adapter construction (tests).
+        Live brokers themselves cannot be injected via ``broker=``; they must
+        come from the approved BROKER_SANDBOX registry path.
     """
-    _validate_settings_mode(settings)
     _validate_execution(execution)
+
+    if execution == "live":
+        command = _require_live_command(live_command)
+        _authorize_live_sandbox(settings, command=command)
+    else:
+        command = live_command or "run-once"
+        _validate_paper_settings_mode(settings)
 
     resolved_market_data = _resolve_market_data(market_data, registry)
     resolved_strategy = _resolve_strategy_engine(strategy_engine, registry)
@@ -100,6 +110,7 @@ def create_trading_runtime(
         broker=broker,
         market_data=resolved_market_data,
         session_calendar=session_calendar,
+        http_transport=http_transport,
     )
 
     return BasicTradingRuntime(
@@ -112,6 +123,8 @@ def create_trading_runtime(
         order_manager=resolved_order_manager,
         alert_notifier=resolved_alert_notifier,
         session_calendar=session_calendar,
+        execution=execution,
+        command=command if execution == "live" else (live_command or "run-once"),
     )
 
 
@@ -119,6 +132,7 @@ def create_trading_runtime_from_app(
     app: Any,
     *,
     execution: ExecutionBackend = "dry_run",
+    live_command: str | None = None,
     **kwargs: Any,
 ) -> BasicTradingRuntime:
     """Build a Runtime from a ``TradingBotApplication`` (settings + registry)."""
@@ -132,21 +146,22 @@ def create_trading_runtime_from_app(
         settings,
         registry=registry,
         execution=execution,
+        live_command=live_command,
         **kwargs,
     )
 
 
-def _validate_settings_mode(settings: Settings) -> None:
+def _validate_paper_settings_mode(settings: Settings) -> None:
     mode = settings.trading_mode
     if mode == "live":
         raise ConfigurationError(
-            "trading_mode='live' is not allowed; "
-            "Milestone 8 factory permits paper and dry-run only"
+            "trading_mode='live' requires execution='live' with all live gates; "
+            "paper/dry-run factory paths permit trading_mode='paper' only"
         )
-    if mode not in _ALLOWED_SETTINGS_MODES:
+    if mode not in _ALLOWED_PAPER_SETTINGS_MODES:
         raise ConfigurationError(
             f"trading_mode={mode!r} is not allowed; "
-            "Milestone 8 factory permits paper and dry-run only"
+            "paper/dry-run factory paths permit trading_mode='paper' only"
         )
 
 
@@ -154,8 +169,36 @@ def _validate_execution(execution: str) -> None:
     if execution not in _ALLOWED_EXECUTIONS:
         raise ConfigurationError(
             f"execution={execution!r} is not supported; "
-            "expected 'dry_run' or 'paper'"
+            "expected 'dry_run', 'paper', or 'live'"
         )
+
+
+def _require_live_command(live_command: str | None) -> str:
+    if live_command is None or not str(live_command).strip():
+        raise ConfigurationError(
+            "execution='live' requires live_command='run-once' or 'run-session'"
+        )
+    command = str(live_command).strip()
+    if command not in _LIVE_COMMANDS:
+        raise ConfigurationError(
+            f"execution='live' rejects command={command!r}; "
+            "only run-once and run-session are supervised LIVE surfaces"
+        )
+    return command
+
+
+def _authorize_live_sandbox(settings: Settings, *, command: str) -> None:
+    """Factory-time Authority check (mode_policy re-checks independently)."""
+    auth = evaluate_live_enablement(
+        settings,
+        LiveExecutionContext(
+            command=command,
+            execution="live",
+            context_mode=TradingMode.LIVE,
+        ),
+    )
+    if not auth.authorized:
+        raise ConfigurationError(auth.reason or "live enablement denied")
 
 
 def _resolve_market_data(market_data: Any | None, registry: ModuleRegistry | None) -> Any:
@@ -220,12 +263,20 @@ def _build_executor(
     execution: ExecutionBackend,
     settings: Settings,
     registry: ModuleRegistry | None,
-    broker: PaperBroker | None,
+    broker: Broker | None,
     market_data: Any,
     session_calendar: Any,
+    http_transport: Any | None,
 ) -> DryRunExecutor | BrokerOrderExecutor:
     if execution == "dry_run":
         return DryRunExecutor()
+
+    if execution == "live":
+        return _build_live_sandbox_executor(
+            settings=settings,
+            broker=broker,
+            http_transport=http_transport,
+        )
 
     paper_broker = _resolve_paper_broker(
         settings=settings,
@@ -237,11 +288,59 @@ def _build_executor(
     return BrokerOrderExecutor(paper_broker)
 
 
+def _build_live_sandbox_executor(
+    *,
+    settings: Settings,
+    broker: Broker | None,
+    http_transport: Any | None,
+) -> BrokerOrderExecutor:
+    # M13.2 remediation: never accept injected broker instances under live.
+    # Sandbox adapters must come from the approved registry path only.
+    if broker is not None:
+        raise ConfigurationError(
+            "execution='live' rejects externally injected broker= instances; "
+            "BROKER_SANDBOX adapters must be constructed via the approved registry"
+        )
+
+    try:
+        live_broker = construct_sandbox_broker(
+            settings,
+            transport=http_transport,
+        )
+    except ConfigurationError:
+        raise
+    except Exception as exc:
+        raise ConfigurationError(
+            f"failed to construct approved sandbox broker: {exc.__class__.__name__}"
+        ) from exc
+
+    if isinstance(live_broker, PaperBroker):
+        raise ConfigurationError(
+            "execution='live' constructed PaperBroker; refusing silent downgrade"
+        )
+
+    assert settings.live_max_order_notional is not None
+    assert settings.live_max_orders_per_day is not None
+    guarded = LiveCapGuardBroker(
+        live_broker,
+        max_order_notional=settings.live_max_order_notional,
+        max_orders_per_day=settings.live_max_orders_per_day,
+        counter=LiveOrderCounter(),
+    )
+    try:
+        guarded.connect()
+    except Exception as exc:
+        raise ConfigurationError(
+            f"sandbox broker connect failed: {exc.__class__.__name__}"
+        ) from exc
+    return BrokerOrderExecutor(guarded)
+
+
 def _resolve_paper_broker(
     *,
     settings: Settings,
     registry: ModuleRegistry | None,
-    broker: PaperBroker | None,
+    broker: Broker | None,
     market_data: Any,
     session_calendar: Any,
 ) -> PaperBroker:
@@ -280,7 +379,8 @@ def _resolve_paper_broker(
                 if not isinstance(candidate, PaperBroker):
                     raise ConfigurationError(
                         f"broker_interface broker {type(candidate).__name__} "
-                        "is not a PaperBroker; live brokers are not allowed"
+                        "is not a PaperBroker; live brokers are not allowed "
+                        "on execution='paper'"
                     )
                 if candidate.quote_source is None:
                     candidate.set_quote_source(quote_source)

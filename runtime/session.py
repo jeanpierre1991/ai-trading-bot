@@ -22,12 +22,14 @@ MAX_SESSION_CYCLES = 100
 
 @dataclass(frozen=True)
 class SessionConfig:
-    """Inputs for one bounded paper/dry-run session."""
+    """Inputs for one bounded paper/dry-run (or gated live sandbox) session."""
 
     cycles: int
     symbol: str
     strategy_name: str | None = None
     bar_limit: int = 100
+    # M13.2: LIVE only when factory execution='live' and gates authorize sandbox.
+    mode: TradingMode = TradingMode.PAPER
 
 
 @dataclass(frozen=True)
@@ -103,7 +105,7 @@ class SessionRunner:
             )
             context = RuntimeContext(
                 symbol=config.symbol,
-                mode=TradingMode.PAPER,
+                mode=config.mode,
                 strategy_name=config.strategy_name,
                 bar_limit=config.bar_limit,
                 daily_pnl_pct=session_pnl_pct,

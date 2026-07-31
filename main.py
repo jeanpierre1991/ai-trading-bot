@@ -47,7 +47,11 @@ from utilities.logging_setup import setup_logging
 logger = logging.getLogger("trading_bot.main")
 
 
-def _add_execution_flags(parser: argparse.ArgumentParser) -> None:
+def _add_execution_flags(
+    parser: argparse.ArgumentParser,
+    *,
+    allow_live: bool = False,
+) -> None:
     execution = parser.add_mutually_exclusive_group()
     execution.add_argument(
         "--dry-run",
@@ -59,6 +63,15 @@ def _add_execution_flags(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Use BrokerOrderExecutor with PaperBroker (must be explicit)",
     )
+    if allow_live:
+        execution.add_argument(
+            "--live",
+            action="store_true",
+            help=(
+                "M13.2 supervised BROKER_SANDBOX path only when all live gates "
+                "pass (not a real-money trial; LIVE_PRODUCTION remains denied)"
+            ),
+        )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -80,9 +93,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     run_once_parser = subparsers.add_parser(
         "run-once",
-        help="Run one paper/dry-run decision cycle (Milestone 8)",
+        help="Run one paper/dry-run decision cycle (Milestone 8); optional gated --live sandbox",
     )
-    _add_execution_flags(run_once_parser)
+    _add_execution_flags(run_once_parser, allow_live=True)
     run_once_parser.add_argument(
         "--symbol",
         default=None,
@@ -112,10 +125,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "run-session",
         help=(
             "Run a bounded paper/dry-run multi-cycle session (Milestone 9); "
-            f"cycles must be 1..{MAX_SESSION_CYCLES}"
+            f"optional gated --live sandbox; cycles must be 1..{MAX_SESSION_CYCLES}"
         ),
     )
-    _add_execution_flags(run_session_parser)
+    _add_execution_flags(run_session_parser, allow_live=True)
     run_session_parser.add_argument(
         "--cycles",
         type=int,
@@ -268,9 +281,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _execution_from_args(args: argparse.Namespace) -> str:
     """Map CLI flags to factory execution. Default is dry_run."""
+    if getattr(args, "live", False):
+        return "live"
     if getattr(args, "paper", False):
         return "paper"
     return "dry_run"
+
+
+def _context_mode_for_execution(execution: str) -> TradingMode:
+    if execution == "live":
+        return TradingMode.LIVE
+    return TradingMode.PAPER
 
 
 def _print_pipeline_result(result: PipelineResult) -> None:
@@ -417,8 +438,24 @@ def _run_paper_operator_command(settings: Settings, args: argparse.Namespace) ->
 
     exit_code = 0
     try:
+        if getattr(args, "live", False):
+            raise ConfigurationError(
+                "run-paper-operator does not support --live (G8); paper-only"
+            )
+        if settings.trading_mode != "paper":
+            raise ConfigurationError(
+                "run-paper-operator requires trading_mode='paper'; "
+                f"got {settings.trading_mode!r}"
+            )
         execution = _execution_from_args(args)
-        runtime = create_trading_runtime_from_app(app, execution=execution)
+        if execution == "live":
+            raise ConfigurationError(
+                "run-paper-operator cannot use execution='live' (G8)"
+            )
+        runtime = create_trading_runtime_from_app(
+            app,
+            execution=execution,  # type: ignore[arg-type]
+        )
         config = PaperOperatorConfig(
             symbol=args.symbol or settings.default_symbol,
             max_cycles=args.max_cycles,
@@ -488,10 +525,14 @@ def _run_once_command(settings: Settings, args: argparse.Namespace) -> int:
     exit_code = 0
     try:
         execution = _execution_from_args(args)
-        runtime = create_trading_runtime_from_app(app, execution=execution)
+        runtime = create_trading_runtime_from_app(
+            app,
+            execution=execution,  # type: ignore[arg-type]
+            live_command="run-once",
+        )
         context = RuntimeContext(
             symbol=args.symbol or settings.default_symbol,
-            mode=TradingMode.PAPER,
+            mode=_context_mode_for_execution(execution),
             strategy_name=args.strategy,
             bar_limit=args.bar_limit,
             daily_pnl_pct=daily_pnl_pct,
@@ -535,12 +576,17 @@ def _run_session_command(settings: Settings, args: argparse.Namespace) -> int:
     exit_code = 0
     try:
         execution = _execution_from_args(args)
-        runtime = create_trading_runtime_from_app(app, execution=execution)
+        runtime = create_trading_runtime_from_app(
+            app,
+            execution=execution,  # type: ignore[arg-type]
+            live_command="run-session",
+        )
         config = SessionConfig(
             cycles=args.cycles,
             symbol=args.symbol or settings.default_symbol,
             strategy_name=args.strategy,
             bar_limit=args.bar_limit,
+            mode=_context_mode_for_execution(execution),
         )
         session_result = SessionRunner(runtime).run(config)
         _print_session_result(session_result)
