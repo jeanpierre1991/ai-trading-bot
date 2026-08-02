@@ -9,12 +9,13 @@ Activation:
   2) durable halt latch engage
   3) best-effort cancel_all_open_orders
   4) write incident snapshot
-  5) CRITICAL alert (console acceptable in M14.1)
+  5) CRITICAL alert via injected AlertNotifier (M14.2 webhook/email/console)
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -29,6 +30,8 @@ from broker_interface.reconcile_port import ReconcileCapableBroker
 from core.exceptions import ConfigurationError
 from runtime.emergency_halt import DurableEmergencyHaltLatch
 from runtime.kill_switch import FileEnvKillSwitch
+
+_logger = logging.getLogger(__name__)
 
 
 class TriggerSource(str, Enum):
@@ -344,7 +347,12 @@ class EmergencyStopController:
         )
         try:
             return bool(self._notifier.send(alert))
-        except Exception:  # noqa: BLE001 - alert must not undo halt
+        except Exception as exc:  # noqa: BLE001 - alert must not undo halt
+            _logger.warning(
+                "emergency_stop_alert_failed incident_id=%s error=%s",
+                incident_id,
+                exc,
+            )
             return False
 
 

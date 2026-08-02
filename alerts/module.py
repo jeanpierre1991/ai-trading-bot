@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from alerts.notifier import Alert, AlertLevel, AlertNotifier, ConsoleNotifier
+from alerts.notifier import Alert, AlertLevel, AlertNotifier
+from alerts.wiring import build_alert_notifier_from_settings
 from config.settings import Settings
 from core.base_module import BaseModule, ModuleHealth
 
@@ -20,14 +21,19 @@ class AlertsModule(BaseModule):
 
     def _on_initialize(self) -> None:
         if self._settings.alerts_enabled:
-            self._notifiers.append(ConsoleNotifier())
+            notifier = build_alert_notifier_from_settings(self._settings)
+            self._notifiers.append(notifier)
 
     def notify(self, title: str, message: str, level: AlertLevel = AlertLevel.INFO) -> int:
         alert = Alert(title=title, message=message, level=level, source=self.name)
         sent = 0
         for notifier in self._notifiers:
-            if notifier.send(alert):
-                sent += 1
+            try:
+                if notifier.send(alert):
+                    sent += 1
+            except Exception:
+                # Channel failures must not break module health/cycle callers.
+                continue
         return sent
 
     def health_check(self) -> ModuleHealth:

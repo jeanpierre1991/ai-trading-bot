@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "checklist_id": "live-trial-example-not-for-production",
+  "signed_off_by": "operator-name",
+  "signed_off_at": "2026-08-01T00:00:00+00:00",
+  "sign_off_confirmed": true,
+  "items": [
+    {
+      "id": "m10_strategy_validation_pack",
+      "description": "M10 backtest isolation / strategy validation pack",
+      "evidence_path": "stubs/m10_strategy_validation_pack.txt",
+      "complete": true
+    },
+    {
+      "id": "m12_paper_soak",
+      "description": "M12.4 paper soak evidence",
+      "evidence_path": "stubs/m12_paper_soak.txt",
+      "complete": true
+    },
+    {
+      "id": "m13_sandbox_live_gated",
+      "description": "M13.2/M13.3 sandbox live gated path evidence",
+      "evidence_path": "stubs/m13_sandbox_live_gated.txt",
+      "complete": true
+    },
+    {
+      "id": "m13_shadow_validation",
+      "description": "M13.4 shadow intent validation samples",
+      "evidence_path": "stubs/m13_shadow_validation.txt",
+      "complete": true
+    },
+    {
+      "id": "m14_kill_cancel_dry_run",
+      "description": "M14.1 kill/cancel sandbox dry-run",
+      "evidence_path": "stubs/m14_kill_cancel_dry_run.txt",
+      "complete": true
+    }
+  ]
+}

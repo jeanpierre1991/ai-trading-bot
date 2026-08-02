@@ -83,6 +83,20 @@ def _log_runtime_event(
     _logger.log(level, "%s %s", event, payload)
 
 
+def _is_critical_safety_rejection(message: str | None) -> bool:
+    """True for emergency/trial/live-cap denials that must page as CRITICAL."""
+    text = (message or "").upper()
+    markers = (
+        "EMERGENCY_HALT",
+        "TRIAL_",
+        "TRIAL ",
+        "LIVE_MAX_",
+        "LIVE NOTIONAL",
+        "LIVE CAP",
+    )
+    return any(marker in text for marker in markers)
+
+
 class BasicTradingRuntime(TradingRuntime):
     """Minimal runtime for paper / dry-run decision cycles (M8).
 
@@ -215,11 +229,21 @@ class BasicTradingRuntime(TradingRuntime):
                 success=False,
                 stage="mode",
             )
+            alerts_sent = 0
+            if self._execution == "live":
+                alerts_sent += self._emit_runtime_alert(
+                    title="live_mode_gate_denied",
+                    message=(
+                        f"symbol={context.symbol} stage=mode reason={mode_abort}"
+                    ),
+                    level=AlertLevel.CRITICAL,
+                )
             return PipelineResult(
                 success=False,
                 stage_reached="mode",
                 aborted_reason=mode_abort,
                 portfolio_snapshot=self._portfolio_snapshot(),
+                alerts_sent=alerts_sent,
             )
 
         if self._execution == "live":
@@ -244,11 +268,20 @@ class BasicTradingRuntime(TradingRuntime):
                         success=False,
                         stage="emergency_halt",
                     )
+                    alerts_sent = self._emit_runtime_alert(
+                        title="emergency_halt_cycle_abort",
+                        message=(
+                            f"symbol={context.symbol} stage=emergency_halt "
+                            f"reason={reason}"
+                        ),
+                        level=AlertLevel.CRITICAL,
+                    )
                     return PipelineResult(
                         success=False,
                         stage_reached="emergency_halt",
                         aborted_reason=reason,
                         portfolio_snapshot=self._portfolio_snapshot(),
+                        alerts_sent=alerts_sent,
                     )
 
             reconcile_abort = self._live_reconcile_abort_reason()
@@ -266,11 +299,20 @@ class BasicTradingRuntime(TradingRuntime):
                     success=False,
                     stage="reconcile",
                 )
+                alerts_sent = self._emit_runtime_alert(
+                    title="reconcile_abort",
+                    message=(
+                        f"symbol={context.symbol} stage=reconcile "
+                        f"reason={reconcile_abort}"
+                    ),
+                    level=AlertLevel.CRITICAL,
+                )
                 return PipelineResult(
                     success=False,
                     stage_reached="reconcile",
                     aborted_reason=reconcile_abort,
                     portfolio_snapshot=self._portfolio_snapshot(),
+                    alerts_sent=alerts_sent,
                 )
 
         try:
@@ -713,6 +755,11 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if execution.status is ExecutionStatus.REJECTED:
+            reject_level = (
+                AlertLevel.CRITICAL
+                if _is_critical_safety_rejection(execution.message)
+                else AlertLevel.WARNING
+            )
             _log_runtime_event(
                 "execution_rejected",
                 level=logging.WARNING,
@@ -732,7 +779,7 @@ class BasicTradingRuntime(TradingRuntime):
                     f"symbol={context.symbol} stage=execution "
                     f"reason={execution.message}"
                 ),
-                level=AlertLevel.WARNING,
+                level=reject_level,
             )
             return PipelineResult(
                 success=False,

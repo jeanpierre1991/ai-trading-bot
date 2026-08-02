@@ -67,6 +67,11 @@ class Settings(BaseSettings):
     trial_max_orders_per_minute: int | None = None
     trial_max_daily_loss_pct: Decimal | None = None
     trial_symbol_allowlist: str | None = None
+    # M14.3: evidence checklist + distinct production-trial confirm token
+    trial_evidence_checklist_path: Path | None = None
+    live_trial_confirm_token: str = ""
+    # M14.4: explicit production-trial wiring latch (default DENY)
+    live_production_trial_wiring_enabled: bool = False
 
     # Broker
     broker_name: str = "paper"
@@ -99,10 +104,20 @@ class Settings(BaseSettings):
     news_provider: str = "mock"
     news_api_key: str = ""
 
-    # Alerts
+    # Alerts (M14.2: console always; webhook/email when configured)
     alerts_enabled: bool = True
     alert_email: str = ""
+    alert_email_from: str = ""
     alert_webhook_url: str = ""
+    alert_webhook_timeout_seconds: float = 5.0
+    alert_webhook_min_level: str = ""
+    alert_email_min_level: str = ""
+    alert_smtp_host: str = ""
+    alert_smtp_port: int = 587
+    alert_smtp_username: str = ""
+    alert_smtp_password: str = ""
+    alert_smtp_use_tls: bool = True
+    alert_smtp_timeout_seconds: float = 10.0
 
     # Backtesting
     backtest_initial_capital: Decimal = Decimal("100000")
@@ -118,6 +133,7 @@ class Settings(BaseSettings):
         "shadow_audit_path",
         "live_emergency_halt_path",
         "live_emergency_kill_path",
+        "trial_evidence_checklist_path",
         mode="before",
     )
     @classmethod

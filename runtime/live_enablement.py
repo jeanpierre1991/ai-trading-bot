@@ -1,11 +1,13 @@
-"""Broker-agnostic hard LIVE enablement gates (Milestone 13.2 / 13.4).
+"""Broker-agnostic hard LIVE enablement gates (Milestone 13.2 / 13.4 / 14.3).
 
-Pure checks: no I/O, no broker calls, no venue-specific imports.
+Pure checks for BROKER_SANDBOX: no broker calls, no venue-specific imports.
 Conjunctive fail-closed authorization for supervised BROKER_SANDBOX wiring only.
-LIVE_PRODUCTION remains hard-denied (real-money trial is M14).
 
 M13.4: ``evaluate_shadow_enablement`` applies the same G1–G5/G7–G10 checks with
 an explicit G6b shadow context gate. G6 for ``execution='live'`` is unchanged.
+
+M14.3: ``LIVE_PRODUCTION`` is handed to ``evaluate_trial_enablement`` (checklist
++ trial gates). Incomplete evidence always denies; production wiring stays off.
 """
 
 from __future__ import annotations
@@ -202,11 +204,22 @@ def _evaluate_common_live_gates(
     if provided != EXPECTED_LIVE_CONFIRM_TOKEN:
         return deny("G3: LIVE_CONFIRM_TOKEN does not match the expected confirmation phrase")
 
-    # G9 — endpoint classification (before adapter detail; production always denied)
+    # G9 — endpoint classification (before adapter detail)
+    # LIVE_PRODUCTION → M14 trial enablement (checklist fail-closed; never silent).
     if endpoint_class == ENDPOINT_LIVE_PRODUCTION:
-        return deny(
-            "G9: LIVE_PRODUCTION endpoint class is hard-denied in M13.2; "
-            "real-money trial requires M14"
+        from runtime.trial_enablement import evaluate_trial_enablement
+
+        trial = evaluate_trial_enablement(settings, context)
+        if trial.authorized:
+            return trial
+        reason = trial.reason or "trial enablement denied"
+        if not reason.startswith("G9:"):
+            reason = f"G9: LIVE_PRODUCTION denied (M14 trial) — {reason}"
+        return LiveAuthorization(
+            authorized=False,
+            reason=reason,
+            endpoint_class=ENDPOINT_LIVE_PRODUCTION,
+            adapter_id=trial.adapter_id or adapter_id or "unknown",
         )
     if endpoint_class != ENDPOINT_BROKER_SANDBOX:
         return deny(

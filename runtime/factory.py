@@ -13,7 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Literal
 
-from alerts.notifier import AlertNotifier, ConsoleNotifier
+from alerts.notifier import AlertNotifier
+from alerts.wiring import resolve_alert_notifier
 from broker_interface.adapter_registry import construct_sandbox_broker
 from broker_interface.broker import Broker, PaperBroker
 from broker_interface.quotes import ClosedBarQuoteSource
@@ -115,9 +116,11 @@ def create_trading_runtime(
         with_order_manager=with_order_manager,
         order_manager=order_manager,
     )
-    resolved_alert_notifier = _resolve_alert_notifier(
+    resolved_alert_notifier = resolve_alert_notifier(
         with_alerts=with_alerts,
         alert_notifier=alert_notifier,
+        settings=settings,
+        http_transport=http_transport,
     )
     try:
         session_calendar = build_session_calendar(
@@ -323,18 +326,6 @@ def _resolve_order_manager(
     if order_manager is not None:
         return order_manager
     return OrderManager()
-
-
-def _resolve_alert_notifier(
-    *,
-    with_alerts: bool,
-    alert_notifier: AlertNotifier | None,
-) -> AlertNotifier | None:
-    if not with_alerts:
-        return None
-    if alert_notifier is not None:
-        return alert_notifier
-    return ConsoleNotifier()
 
 
 def _build_executor(

@@ -16,7 +16,9 @@ ENDPOINT_LOCAL_PAPER: Final = "local_paper"
 ENDPOINT_BROKER_SANDBOX: Final = "broker_sandbox"
 ENDPOINT_LIVE_PRODUCTION: Final = "live_production"
 
-# M13.2: sandbox-only approvals. Production class has an empty allowlist.
+# M13.2: sandbox-only approvals.
+# M14.4: production allowlist remains empty by default. Any future entry requires
+# human-approved registration after checklist + wiring latch + external sign-off.
 _SANDBOX_ADAPTERS: Final[frozenset[str]] = frozenset({"alpaca_paper"})
 _PRODUCTION_ADAPTERS: Final[frozenset[str]] = frozenset()
 
@@ -34,7 +36,7 @@ def is_approved_adapter(adapter_id: str, endpoint_class: str) -> bool:
     if klass == ENDPOINT_BROKER_SANDBOX:
         return name in _SANDBOX_ADAPTERS
     if klass == ENDPOINT_LIVE_PRODUCTION:
-        # M13.2: always empty — production unreachable via registry.
+        # Empty by default — production unreachable without human-gated registration.
         return name in _PRODUCTION_ADAPTERS
     return False
 
