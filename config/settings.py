@@ -58,6 +58,16 @@ class Settings(BaseSettings):
     # M13.4: append-only JSONL shadow audit (required for execution=shadow)
     shadow_audit_path: Path | None = None
 
+    # M14.1: emergency halt latch + optional kill trigger (live sandbox)
+    live_emergency_halt_path: Path | None = None
+    live_emergency_kill_path: Path | None = None
+    # M14.1: optional additive trial limits (inactive when unset)
+    trial_max_order_notional: Decimal | None = None
+    trial_max_orders_per_day: int | None = None
+    trial_max_orders_per_minute: int | None = None
+    trial_max_daily_loss_pct: Decimal | None = None
+    trial_symbol_allowlist: str | None = None
+
     # Broker
     broker_name: str = "paper"
     broker_api_key: str = ""
@@ -103,7 +113,13 @@ class Settings(BaseSettings):
     def _coerce_log_dir(cls, value: str | Path) -> Path:
         return Path(value)
 
-    @field_validator("live_order_ledger_path", "shadow_audit_path", mode="before")
+    @field_validator(
+        "live_order_ledger_path",
+        "shadow_audit_path",
+        "live_emergency_halt_path",
+        "live_emergency_kill_path",
+        mode="before",
+    )
     @classmethod
     def _empty_path_to_none(cls, value: object) -> object:
         if value is None:
@@ -115,6 +131,8 @@ class Settings(BaseSettings):
     @field_validator(
         "live_max_order_notional",
         "live_max_gross_notional",
+        "trial_max_order_notional",
+        "trial_max_daily_loss_pct",
         mode="before",
     )
     @classmethod
@@ -125,9 +143,23 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("live_max_orders_per_day", mode="before")
+    @field_validator(
+        "live_max_orders_per_day",
+        "trial_max_orders_per_day",
+        "trial_max_orders_per_minute",
+        mode="before",
+    )
     @classmethod
     def _empty_int_to_none(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("trial_symbol_allowlist", mode="before")
+    @classmethod
+    def _empty_allowlist_to_none(cls, value: object) -> object:
         if value is None:
             return None
         if isinstance(value, str) and not value.strip():

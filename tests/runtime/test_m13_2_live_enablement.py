@@ -29,7 +29,8 @@ from runtime.context import RuntimeContext
 from runtime.dry_run import DryRunExecutor
 from runtime.factory import create_trading_runtime
 from runtime.idempotent_submit import IdempotentLiveExecutor
-from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter
+from runtime.emergency_guard import EmergencyHaltGuardBroker
+from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter, unwrap_broker
 from runtime.live_enablement import (
     EXPECTED_LIVE_CONFIRM_TOKEN,
     LiveExecutionContext,
@@ -273,8 +274,14 @@ def test_factory_live_sandbox_wires_cap_guarded_alpaca(tmp_path: Any) -> None:
         **_explicit_deps(),
     )
     assert isinstance(runtime.executor, IdempotentLiveExecutor)
-    assert isinstance(runtime.executor.broker, LiveCapGuardBroker)
-    assert isinstance(runtime.executor.broker.inner, AlpacaBroker)
+    # M14.1: EmergencyHalt → (optional Trial) → LiveCapGuard → Alpaca
+    assert isinstance(runtime.executor.broker, EmergencyHaltGuardBroker)
+    assert isinstance(unwrap_broker(runtime.executor.broker), AlpacaBroker)
+    # G10 cap guard remains in the wrap chain.
+    inner = runtime.executor.broker.inner
+    assert isinstance(inner, LiveCapGuardBroker) or isinstance(
+        getattr(inner, "inner", None), LiveCapGuardBroker
+    )
 
 
 def test_factory_live_production_unreachable(tmp_path: Any) -> None:

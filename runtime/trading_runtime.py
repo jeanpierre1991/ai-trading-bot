@@ -62,6 +62,7 @@ from runtime.mode_policy import mode_policy_violation
 from runtime.models import PipelineResult, TradeIntent
 from runtime.reconcile import ReconcilePolicy, reconcile_live
 from runtime.risk_gate import apply_risk_gate
+from runtime.emergency_stop import EmergencyStopController
 from runtime.shadow_executor import ShadowExecutor, build_shadow_observation
 from runtime.shadow_record import ShadowAuditLog
 from strategy_engine.signal import StrategySignal
@@ -119,6 +120,7 @@ class BasicTradingRuntime(TradingRuntime):
         command: str = "run-once",
         live_ledger: JsonLiveOrderLedger | None = None,
         shadow_audit: ShadowAuditLog | None = None,
+        emergency_controller: EmergencyStopController | None = None,
     ) -> None:
         self._settings = settings
         self._market_data = market_data
@@ -132,6 +134,7 @@ class BasicTradingRuntime(TradingRuntime):
         self._command = command
         self._live_ledger = live_ledger
         self._shadow_audit = shadow_audit
+        self._emergency_controller = emergency_controller
         self._clock = clock if clock is not None else utc_now
         self._session_calendar = session_calendar
 
@@ -220,6 +223,34 @@ class BasicTradingRuntime(TradingRuntime):
             )
 
         if self._execution == "live":
+            if self._emergency_controller is not None:
+                self._emergency_controller.poll_and_activate_if_needed()
+                if self._emergency_controller.is_halted():
+                    state = self._emergency_controller.latch.state
+                    reason = (
+                        "EMERGENCY_HALT engaged; refusing live cycle "
+                        f"(incident_id={state.incident_id})"
+                    )
+                    _log_runtime_event(
+                        "emergency_halt_abort",
+                        level=logging.CRITICAL,
+                        symbol=context.symbol,
+                        stage="emergency_halt",
+                        reason=reason,
+                    )
+                    _log_runtime_event(
+                        "cycle_end",
+                        symbol=context.symbol,
+                        success=False,
+                        stage="emergency_halt",
+                    )
+                    return PipelineResult(
+                        success=False,
+                        stage_reached="emergency_halt",
+                        aborted_reason=reason,
+                        portfolio_snapshot=self._portfolio_snapshot(),
+                    )
+
             reconcile_abort = self._live_reconcile_abort_reason()
             if reconcile_abort is not None:
                 _log_runtime_event(

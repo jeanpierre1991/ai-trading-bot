@@ -17,7 +17,7 @@ from core.types import TradingMode
 from runtime.broker_executor import BrokerOrderExecutor
 from runtime.executor import OrderExecutor
 from runtime.idempotent_submit import IdempotentLiveExecutor
-from runtime.live_caps import LiveCapGuardBroker
+from runtime.live_caps import unwrap_broker
 from runtime.live_enablement import (
     LiveExecutionContext,
     evaluate_live_enablement,
@@ -110,9 +110,7 @@ def _live_mode_policy_violation(
             f"got {type(executor).__name__ if executor is not None else 'None'}"
         )
 
-    broker: Any = executor.broker
-    if isinstance(broker, LiveCapGuardBroker):
-        broker = broker.inner
+    broker: Any = unwrap_broker(executor.broker)
     if isinstance(broker, PaperBroker):
         return (
             "execution='live' cannot use PaperBroker; "
@@ -200,9 +198,7 @@ def _paper_mode_policy_violation(
         )
 
     if isinstance(executor, BrokerOrderExecutor):
-        broker: Any = executor.broker
-        if isinstance(broker, LiveCapGuardBroker):
-            broker = broker.inner
+        broker: Any = unwrap_broker(executor.broker)
         if not isinstance(broker, PaperBroker):
             return (
                 f"executor broker {type(broker).__name__} is not allowed; "

@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from urllib.parse import urlparse
 
 from broker_interface.broker import Broker, BrokerStatus
+from broker_interface.cancel_port import CancelAllResult
 from broker_interface.execution import ExecutionResult, ExecutionStatus
 from broker_interface.http_transport import HttpTransport, UrllibHttpTransport
 from broker_interface.orders import BrokerOrderRequest
@@ -313,6 +314,75 @@ class AlpacaBroker(Broker):
             raise ConfigurationError("Alpaca open orders response must be a JSON list")
         return [_snapshot_from_alpaca_order(item) for item in payload]
 
+    def cancel_all_open_orders(self) -> CancelAllResult:
+        """Best-effort cancel of all open orders (M14.1 CancelCapableBroker)."""
+        try:
+            before = self.list_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            return CancelAllResult(
+                attempted=False,
+                partial=True,
+                error=exc.__class__.__name__,
+                message=f"failed to list open orders before cancel-all: {exc.__class__.__name__}",
+            )
+
+        open_ids = tuple(
+            str(o.broker_order_id) for o in before if str(o.broker_order_id).strip()
+        )
+        if not open_ids:
+            return CancelAllResult(
+                attempted=True,
+                canceled_order_ids=(),
+                failed_order_ids=(),
+                partial=False,
+                message="no open orders to cancel",
+            )
+
+        try:
+            # Alpaca: DELETE /v2/orders cancels all open orders.
+            self._request_empty_ok("DELETE", f"{self._base_url}/v2/orders")
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            return CancelAllResult(
+                attempted=True,
+                canceled_order_ids=(),
+                failed_order_ids=open_ids,
+                partial=True,
+                error=exc.__class__.__name__,
+                message=f"Alpaca cancel-all failed: {exc.__class__.__name__}",
+            )
+
+        try:
+            after = self.list_open_orders()
+        except Exception as exc:  # noqa: BLE001
+            return CancelAllResult(
+                attempted=True,
+                canceled_order_ids=(),
+                failed_order_ids=open_ids,
+                partial=True,
+                error=exc.__class__.__name__,
+                message=(
+                    "cancel-all issued but open-order re-list failed: "
+                    f"{exc.__class__.__name__}"
+                ),
+            )
+
+        remaining = {
+            str(o.broker_order_id) for o in after if str(o.broker_order_id).strip()
+        }
+        canceled = tuple(oid for oid in open_ids if oid not in remaining)
+        failed = tuple(oid for oid in open_ids if oid in remaining)
+        return CancelAllResult(
+            attempted=True,
+            canceled_order_ids=canceled,
+            failed_order_ids=failed,
+            partial=bool(failed),
+            message=(
+                "Alpaca cancel-all completed with residual open orders"
+                if failed
+                else "Alpaca cancel-all completed"
+            ),
+        )
+
     def list_positions(self) -> list[BrokerPositionSnapshot]:
         payload = self._request_json("GET", f"{self._base_url}/v2/positions")
         if not isinstance(payload, list):
@@ -443,6 +513,37 @@ class AlpacaBroker(Broker):
             raise ConfigurationError(
                 f"Alpaca API error status={response.status_code} detail={detail}"
             )
+        try:
+            return response.json()
+        except Exception as exc:
+            raise ConfigurationError(
+                f"Alpaca API returned non-JSON body (status={response.status_code})"
+            ) from exc
+
+    def _request_empty_ok(
+        self,
+        method: str,
+        url: str,
+        *,
+        body: Mapping[str, Any] | None = None,
+    ) -> Any | None:
+        """Like ``_request_json`` but tolerates empty bodies (cancel-all)."""
+        raw_body = None if body is None else json.dumps(body).encode("utf-8")
+        response = self._transport.request(
+            method,
+            url,
+            headers=self.auth_headers(),
+            body=raw_body,
+            timeout=self._timeout,
+        )
+        if response.status_code >= 400:
+            detail = _safe_response_detail(response.text())
+            raise ConfigurationError(
+                f"Alpaca API error status={response.status_code} detail={detail}"
+            )
+        text = response.text()
+        if not str(text or "").strip():
+            return None
         try:
             return response.json()
         except Exception as exc:

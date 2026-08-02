@@ -10,6 +10,7 @@ There is no silent PaperBroker fallback for ``execution='live'``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Literal
 
 from alerts.notifier import AlertNotifier, ConsoleNotifier
@@ -26,6 +27,12 @@ from risk_manager.base import RiskManager
 from risk_manager.basic import BasicRiskManager
 from runtime.broker_executor import BrokerOrderExecutor
 from runtime.dry_run import DryRunExecutor
+from runtime.emergency_guard import EmergencyHaltGuardBroker
+from runtime.emergency_halt import DurableEmergencyHaltLatch
+from runtime.emergency_stop import (
+    EmergencyStopController,
+    FileEnvEmergencyTrigger,
+)
 from runtime.idempotent_submit import IdempotentLiveExecutor, require_live_ledger_path
 from runtime.live_caps import LiveCapGuardBroker, LiveOrderCounter
 from runtime.live_enablement import (
@@ -36,6 +43,7 @@ from runtime.live_enablement import (
 from runtime.live_order_ledger import JsonLiveOrderLedger
 from runtime.shadow_executor import ShadowExecutor
 from runtime.shadow_record import ShadowAuditLog, require_shadow_audit_path
+from runtime.trial_limits import TrialLimitGuardBroker, trial_config_from_settings
 from runtime.trading_runtime import BasicTradingRuntime
 
 ExecutionBackend = Literal["dry_run", "paper", "live", "shadow"]
@@ -139,7 +147,14 @@ def create_trading_runtime(
         live_ledger=live_ledger,
         shadow_audit=shadow_audit,
         command=command,
+        alert_notifier=resolved_alert_notifier,
     )
+
+    emergency_controller = None
+    if execution == "live" and isinstance(resolved_executor, IdempotentLiveExecutor):
+        guarded = resolved_executor.broker
+        if isinstance(guarded, EmergencyHaltGuardBroker):
+            emergency_controller = guarded.controller
 
     return BasicTradingRuntime(
         settings=settings,
@@ -159,6 +174,7 @@ def create_trading_runtime(
         ),
         live_ledger=live_ledger,
         shadow_audit=shadow_audit,
+        emergency_controller=emergency_controller,
     )
 
 
@@ -333,6 +349,7 @@ def _build_executor(
     live_ledger: JsonLiveOrderLedger | None = None,
     shadow_audit: ShadowAuditLog | None = None,
     command: str = "run-once",
+    alert_notifier: AlertNotifier | None = None,
 ) -> DryRunExecutor | BrokerOrderExecutor | ShadowExecutor:
     if execution == "dry_run":
         return DryRunExecutor()
@@ -347,6 +364,7 @@ def _build_executor(
             broker=broker,
             http_transport=http_transport,
             live_ledger=live_ledger,
+            alert_notifier=alert_notifier,
         )
 
     if execution == "shadow":
@@ -400,6 +418,7 @@ def _build_live_sandbox_executor(
     broker: Broker | None,
     http_transport: Any | None,
     live_ledger: JsonLiveOrderLedger,
+    alert_notifier: AlertNotifier | None = None,
 ) -> BrokerOrderExecutor:
     # M13.2 remediation: never accept injected broker instances under live.
     # Sandbox adapters must come from the approved registry path only.
@@ -428,13 +447,54 @@ def _build_live_sandbox_executor(
 
     assert settings.live_max_order_notional is not None
     assert settings.live_max_orders_per_day is not None
-    guarded = LiveCapGuardBroker(
+    # Wrap order (outer → inner):
+    # EmergencyHalt → TrialLimits(optional) → LiveCapGuard(G10) → venue
+    guarded: Broker = LiveCapGuardBroker(
         live_broker,
         max_order_notional=settings.live_max_order_notional,
         max_orders_per_day=settings.live_max_orders_per_day,
         counter=LiveOrderCounter(),
         ledger=live_ledger,
     )
+
+    trial_cfg = trial_config_from_settings(settings)
+    if trial_cfg.active:
+        # Additive stricter envelope; does not weaken G10.
+        if (
+            trial_cfg.max_order_notional is not None
+            and trial_cfg.max_order_notional > settings.live_max_order_notional
+        ):
+            raise ConfigurationError(
+                "TRIAL_MAX_ORDER_NOTIONAL cannot exceed LIVE_MAX_ORDER_NOTIONAL"
+            )
+        if (
+            trial_cfg.max_orders_per_day is not None
+            and trial_cfg.max_orders_per_day > settings.live_max_orders_per_day
+        ):
+            raise ConfigurationError(
+                "TRIAL_MAX_ORDERS_PER_DAY cannot exceed LIVE_MAX_ORDERS_PER_DAY"
+            )
+        guarded = TrialLimitGuardBroker(guarded, config=trial_cfg)
+
+    halt_path = settings.live_emergency_halt_path
+    if halt_path is None:
+        halt_path = Path(live_ledger.path).parent / "emergency_halt.json"
+    incident_dir = Path(halt_path).parent / "incidents"
+    latch = DurableEmergencyHaltLatch(halt_path)
+    controller = EmergencyStopController(
+        latch=latch,
+        incident_dir=incident_dir,
+        broker=live_broker,
+        notifier=alert_notifier,
+        triggers=[
+            FileEnvEmergencyTrigger(
+                settings.live_emergency_kill_path,
+                env_var="LIVE_EMERGENCY_KILL",
+            )
+        ],
+    )
+    guarded = EmergencyHaltGuardBroker(guarded, controller=controller)
+
     try:
         guarded.connect()
     except Exception as exc:
